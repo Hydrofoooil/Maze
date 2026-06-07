@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 这是一个「迷宫自动解算 + 机械臂仿真绘制」的端到端系统：
 1. **maze_planner**：从手机/相机拍到的迷宫照片，重建出纯黑白扫描件，检测红(起)/蓝(终)标记，用 A* 规划路径。
 2. **arm_sim**：在 NVIDIA Isaac Sim 里加载 5-DOF 机械臂 URDF，用解析正运动学(FK) + 阻尼最小二乘逆运动学(IK) 驱动笔尖沿规划路径描画，离屏渲染成 mp4。
+3. **arm_real**：通过上下位机 TCP 链路把规划好的关节轨迹下发给**真实机械臂**执行。上位机（本机）跑 `arm_real_client`，下位机（Windows+WSL）跑 `arm_real_server`。
 
 ## 运行环境
 
@@ -83,6 +84,20 @@ MAZE_FRAMETEST=1 python arm_sim/draw_circle.py
 MAZE_FRAMETEST=1 python arm_sim/draw_maze.py
 ```
 
+### arm_real（实机控制，完整部署见 README「四、实机控制」）
+
+```bash
+# 下位机 Windows：起串口桥（监听 9100，写 COM4@115200）
+python serial_bridge.py
+# 下位机 WSL：起 robot server（监听 9000，转发到 bridge 9100）
+python3 robot_server.py
+# 下位机 Windows：portproxy 把对外 9001 → WSL 9000（管理员 PowerShell，一次性）
+netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=9001 connectaddress=127.0.0.1 connectport=9000
+
+# 上位机（本机）：发一条测试轨迹
+cd arm_real_client && python test_client.py
+```
+
 ## 代码架构
 
 ### maze_planner 模块
@@ -115,3 +130,19 @@ MAZE_FRAMETEST=1 python arm_sim/draw_maze.py
 
 **`urdf/five_dof_arm.urdf`** — 机械臂描述  
 5 个旋转关节，每个关节的 origin/axis 直接对应 `arm_kinematics.py` 里的 `_JOINTS` 硬编码参数。修改 URDF 后必须同步更新 `_JOINTS`，并用 `MAZE_FRAMETEST=1` 脚本验证 FK 误差 < 0.1mm。
+
+### arm_real 模块（真实机械臂控制）
+
+上下位机 TCP 链路把关节轨迹下发到实机，详细部署与排错见 README「四、实机控制」。链路：
+`client →(9001 portproxy)→ robot_server(9000) →(9100)→ serial_bridge → COM4 → 主控板`。
+
+**`arm_real_client/robot_client.py`** — 上位机（本机）客户端  
+`RobotClient` 类，连下位机 `host:9001`，方法 `ping/joint/trajectory/status/state/stop`。每个请求是一条单行 JSON、一来一回的短连接。`test_client.py` 是发轨迹的最小示例。
+
+**`arm_real_server/robot_server.py`** — 下位机 WSL 端，监听 9000  
+`handle_request` 分发请求；`make_arm_cmd` 做关节限幅（b±180 / s±90 / e±90 / w±90 / h±45）并转成底层 `T=122` 串口指令；trajectory 在独立线程按 `dt` 逐点发送，执行状态存在 `server_state`（idle/running/done/stopped/error），靠 `stop_event` 中断（stop 只阻止后续点，非物理急停）。
+
+**`arm_real_server/serial_bridge.py`** — 下位机 Windows 端，监听 9100  
+把收到的 JSON 写入 `COM4@115200`。WSL 不能直接访问 USB 串口，所以靠这个 bridge 中转。当前是「每个控制点建一次 TCP 连接、发完即断」。
+
+⚠️ `arm_real_server/` 的两个文件是要**部署到下位机**的（robot_server → WSL `~/robot_arm/`，serial_bridge → Windows 桌面），仓库里只是存档，改完需手动同步过去。

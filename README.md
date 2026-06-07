@@ -1,7 +1,8 @@
 # Maze
 
 把摄像头拍到的「白纸黑笔迷宫」照片重建成扫描件，做起点→终点路径规划，
-并可在 NVIDIA Isaac Sim 里让 5-DOF 机械臂用笔沿规划路径描画、渲染成视频。
+并可在 NVIDIA Isaac Sim 里让 5-DOF 机械臂用笔沿规划路径描画、渲染成视频，
+或通过上下位机 TCP 通信驱动真实机械臂执行轨迹。
 - 起点用**红笔**标记，终点用**蓝笔**标记。
 
 ## 一、重建 (maze_scanner.py)
@@ -58,6 +59,120 @@ python arm_sim/draw_maze.py            # 或 draw_circle.py / record_video.py
 MAZE_FRAMETEST=1 python arm_sim/draw_maze.py
 ```
 
+## 四、实机控制（真实机械臂）
+
+前三步都在上位机（这台跑规划/仿真的机器）完成。要把规划好的关节轨迹发给**真实机械臂**，
+还需要一台下位机。下位机是 Windows + WSL：机械臂通过 USB-C 接 Windows，识别为
+`USB-SERIAL CH340 (COM4)`（另需 12V DC 单独供电，USB-C 只做通信）。WSL 不能直接访问
+USB 串口，所以经一条 TCP 链路转发。
+
+### 4.1 通信链路
+
+```text
+上位机 robot_client.py
+    ↓ TCP（对外 9001）
+下位机 Windows portproxy :9001  →  127.0.0.1:9000
+    ↓
+下位机 WSL robot_server.py :9000      （关节限幅 / 异步执行 / 状态查询 / stop）
+    ↓ TCP 127.0.0.1:9100
+下位机 Windows serial_bridge.py :9100
+    ↓ pyserial COM4 @ 115200
+机械臂主控板
+```
+
+仓库里的三个文件对应链路里的三个角色：
+
+| 仓库文件 | 部署到 | 角色 |
+|---|---|---|
+| `arm_real_client/robot_client.py` | 上位机（本机） | 发请求的客户端封装 |
+| `arm_real_server/robot_server.py` | 下位机 WSL（如 `~/robot_arm/`） | 接收轨迹、限幅、按时执行、转发 |
+| `arm_real_server/serial_bridge.py` | 下位机 Windows（如桌面） | 把 TCP 数据写入 COM4 串口 |
+
+### 4.2 底层协议与关节限幅
+
+机械臂底层是单行 JSON 串口协议，`T=122` 表示按角度控制关节：
+
+```json
+{"T":122,"b":0,"s":0,"e":0,"w":0,"h":0,"spd":10,"acc":10}
+```
+
+`b` 底盘 base、`s` 肩 shoulder、`e` 肘 elbow、`w` 腕 wrist、`h` 夹爪 hand、`spd` 速度、`acc` 加速度。
+robot_server 会对每个关节做限幅（`make_arm_cmd`）：
+
+```text
+b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -45~45
+```
+
+### 4.3 启动顺序（每次实机运行前）
+
+1. **下位机 Windows** 起 serial bridge（监听 9100，写 COM4），窗口别关：
+   ```powershell
+   cd $HOME\Desktop
+   python serial_bridge.py
+   ```
+   正常输出 `[OK] Opened serial COM4 @ 115200` / `[OK] Listening on 0.0.0.0:9100`。
+
+2. **下位机 WSL** 起 robot server（监听 9000，目标 bridge 9100），窗口别关：
+   ```bash
+   cd ~/robot_arm
+   python3 robot_server.py
+   ```
+   正常输出 `[OK] robot_server listening on 0.0.0.0:9000`。
+
+3. **下位机 Windows** 配 portproxy + 防火墙，把对外 9001 转发到 WSL 的 9000
+   （管理员 PowerShell，一次性配置，重启后需确认仍在）：
+   ```powershell
+   netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=9001 connectaddress=127.0.0.1 connectport=9000
+   netsh advfirewall firewall add rule name="Robot Server 9001 to WSL" dir=in action=allow protocol=TCP localport=9001
+   ```
+
+4. **上位机** 用 robot_client 发指令（`host` 填下位机地址，当前 `10.196.101.150`，`port=9001`）：
+   ```python
+   from robot_client import RobotClient
+   robot = RobotClient(host="10.196.101.150", port=9001)
+   print(robot.ping())
+   pts = [{"b": 0,  "s": 0, "e": 0, "w": 0, "h": 0},
+          {"b": 30, "s": 0, "e": 0, "w": 0, "h": 0},
+          {"b": 0,  "s": 0, "e": 0, "w": 0, "h": 0}]
+   print(robot.trajectory(pts, dt=1.0, traj_id="test", spd=10, acc=10))
+   print(robot.status())
+   ```
+   连通性自测：`nc -vz 10.196.101.150 9001`。注意 **9001 通、9000 不通是正常的**——9000 在 WSL
+   内部，对外只通过 portproxy 暴露 9001。
+
+### 4.4 上位机请求类型
+
+robot_client 提供 `ping / joint / trajectory / status / state / stop`：
+
+- **ping** → `{"ok":true,"msg":"pong"}`，测通信。
+- **joint**：单点控制 `{"type":"joint","b":30,...,"spd":10,"acc":10}`，server 限幅后转成 `T=122`
+  串口指令。轨迹执行期间会拒绝单点（需先 stop）。
+- **trajectory**：异步下发整条轨迹（`points` + `dt` + `spd/acc`）。返回 `accepted` 只表示**已接收，
+  不代表执行完成**；server 用独立线程按 `dt` 逐点发送。
+- **status**：查本地执行状态 `server_state`，字段 `status`（idle/running/done/stopped/error）、
+  `traj_id`、`current_index`、`total_points` 等。
+- **state**：向机械臂查 `T=105`（当前主控板未稳定返回，系统不依赖它，以本地 `server_state` 为准）。
+- **stop**：置 stop 标志，阻止继续下发后续轨迹点。**注意不是物理急停**，已发给主控板的当前目标点不会撤回。
+
+### 4.5 已验证 & 已知现象
+
+已验证：WSL→bridge→COM4 链路通、单点 base 0→30→0、上位机经 9001 连通、trajectory 异步执行、
+status 查询、stop 中断。
+
+已知正常现象：serial_bridge 每个控制点建一次 TCP 连接、发完即断，所以会不停打印
+`Connected by ... / Client disconnected`，这是当前「每点重连」实现的预期行为。
+
+排错要点：
+- 上位机连不上 9001 → 查 portproxy（`netsh interface portproxy show v4tov4`）和防火墙规则。
+- server 收到轨迹但机械臂不动 → 查 serial_bridge 是否在跑、`nc -vz 127.0.0.1 9100`。
+- 单点能动、trajectory 不动 → 确认新轨迹开始 `stop_event.clear()`、等待用 `stop_event.wait(dt)`
+  而非 `time.sleep(dt)`（已在 robot_server 实现）。
+
+### 4.6 后续可改进
+
+回安全姿态 `safe_home`、更强急停、日志落盘、Windows/WSL 服务开机自启、serial_bridge 持久连接
+（减少每点重连）、轨迹合法性检查（最大步长 / 速度 / 点数）。
+
 ## 目录结构
 > 所有命令都在仓库根目录 `Maze/` 下运行。
 
@@ -78,6 +193,12 @@ arm_sim/                 机械臂仿真绘制模块（Isaac Sim）
 urdf/                    机械臂模型
   five_dof_arm.urdf      5 个旋转关节，参数与 arm_kinematics 对应
   meshes/                各连杆 STL
+arm_real_client/         实机控制 - 上位机客户端
+  robot_client.py        RobotClient 封装（ping/joint/trajectory/status/stop）
+  test_client.py         发送轨迹示例
+arm_real_server/         实机控制 - 下位机（部署到 Windows + WSL）
+  robot_server.py        WSL 端：限幅 / 异步执行 / 状态 / stop，转发到 bridge
+  serial_bridge.py       Windows 端：TCP ↔ COM4 串口
 arm_motion.mp4           关节运动演示（根目录产物）
 arm_draw_circle.mp4      画圆结果
 arm_draw_maze.mp4        迷宫描画结果
