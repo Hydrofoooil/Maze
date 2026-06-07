@@ -170,8 +170,14 @@ def astar(occ, start, goal):
 # ----------------------------------------------------------------------------
 # 主流程
 # ----------------------------------------------------------------------------
-def plan(path, debug_dir=None, inflate=1, close=5, grid_max=400,
-         manual=True, auto=False, corners=None):
+def solve_path(path, debug_dir=None, inflate=1, close=5, grid_max=400,
+               manual=True, auto=False, corners=None):
+    """
+    返回 (pts, warped, binary, start_xy, goal_xy):
+      pts       : 解路径在矫正图(warped)像素坐标下的点列 [(x,y), ...] (起点->终点)
+      warped    : 透视矫正后的彩色图
+      binary    : 二值扫描件(墙=黑)
+    """
     binary, warped = scan(path, debug_dir=debug_dir,
                           manual=manual, auto=auto, corners=corners)
 
@@ -180,19 +186,16 @@ def plan(path, debug_dir=None, inflate=1, close=5, grid_max=400,
             os.makedirs(debug_dir, exist_ok=True)
             cv2.imwrite(os.path.join(debug_dir, name), im)
 
-    # 1. 检测标记
     start_xy, goal_xy = detect_markers(warped)
     if start_xy is None or goal_xy is None:
         raise RuntimeError(
             f"未检测到起点/终点标记 (红={start_xy}, 蓝={goal_xy})。"
             "请确认照片里画了红色起点和蓝色终点。")
 
-    # 2. 占用栅格
     occ, scale = build_occupancy(binary, [start_xy, goal_xy],
                                  close=close, inflate=inflate, grid_max=grid_max)
     dbg("6_occupancy.png", (~occ).astype(np.uint8) * 255)  # 白=可走
 
-    # 原图坐标 -> 栅格 (row, col)
     s_cell = (int(round(start_xy[1] * scale)), int(round(start_xy[0] * scale)))
     g_cell = (int(round(goal_xy[1] * scale)), int(round(goal_xy[0] * scale)))
     s_cell = _nearest_free(occ, s_cell)
@@ -200,21 +203,27 @@ def plan(path, debug_dir=None, inflate=1, close=5, grid_max=400,
     if s_cell is None or g_cell is None:
         raise RuntimeError("起点或终点被墙完全包围，无法规划。")
 
-    # 3. A*
     cells = astar(occ, s_cell, g_cell)
     if cells is None:
         raise RuntimeError("起点到终点之间没有可走通路（可能墙体把通道封死了）。")
 
-    # 4. 画回彩色图
-    vis = warped.copy()
     pts = [(int(round(c / scale)), int(round(r / scale))) for r, c in cells]
+    print(f"✓ 路径规划成功: {len(cells)} 个格点 "
+          f"(栅格 {occ.shape[1]}x{occ.shape[0]}, scale={scale:.3f})")
+    return pts, warped, binary, start_xy, goal_xy
+
+
+def plan(path, debug_dir=None, inflate=1, close=5, grid_max=400,
+         manual=True, auto=False, corners=None):
+    pts, warped, binary, start_xy, goal_xy = solve_path(
+        path, debug_dir=debug_dir, inflate=inflate, close=close,
+        grid_max=grid_max, manual=manual, auto=auto, corners=corners)
+
+    vis = warped.copy()
     for i in range(1, len(pts)):
         cv2.line(vis, pts[i - 1], pts[i], (255, 0, 255), 3)
     cv2.circle(vis, (int(start_xy[0]), int(start_xy[1])), 10, (0, 0, 220), -1)   # 起点红
     cv2.circle(vis, (int(goal_xy[0]), int(goal_xy[1])), 10, (220, 0, 0), -1)     # 终点蓝
-
-    print(f"✓ 路径规划成功: {len(cells)} 个格点 "
-          f"(栅格 {occ.shape[1]}x{occ.shape[0]}, scale={scale:.3f})")
     return vis
 
 

@@ -1,0 +1,139 @@
+<?xml version="1.0"?>
+<!--
+  5-DOF manipulator URDF generated from the supplied homogeneous transforms.
+
+  Source matrix distances are in millimeters. URDF convention is meters, so all
+  xyz values below are converted by 0.001.
+
+  Visual meshes were split from the SolidWorks STEP assembly and stored in mm,
+  so each mesh uses scale="0.001 0.001 0.001".
+
+  Rotation decomposition used here:
+    T_i_(i+1) = origin(xyz, rpy at theta_i = 0) * R_axis(theta_i)
+  where URDF applies the joint rotation after the fixed origin transform.
+-->
+<robot name="five_dof_arm">
+  <material name="light_gray">
+    <color rgba="0.78 0.80 0.82 1.0"/>
+  </material>
+  <material name="dark_gray">
+    <color rgba="0.25 0.27 0.30 1.0"/>
+  </material>
+  <material name="blue">
+    <color rgba="0.12 0.36 0.80 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="dark_gray"/>
+    </visual>
+  </link>
+
+  <link name="link_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_1.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+  </link>
+
+  <link name="link_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_2.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="light_gray"/>
+    </visual>
+  </link>
+
+  <link name="link_3">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_3.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+  </link>
+
+  <link name="link_4">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_4.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="light_gray"/>
+    </visual>
+  </link>
+
+  <link name="link_5">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_5.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+  </link>
+
+  <link name="pen_tip"/>
+
+  <!-- ^0T_1: xyz = [0, 0, 49.3] mm, R = Rz(-theta_1) -->
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0.0493" rpy="0 0 0"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-3.14159265359" upper="3.14159265359" effort="10" velocity="2"/>
+  </joint>
+
+  <!-- ^1T_2: xyz = [0, 0, 33.5] mm, R0 = Rx(pi/2), variable Rz(-theta_2) -->
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0 0 0.0335" rpy="1.57079632679 0 0"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-3.14159265359" upper="3.14159265359" effort="10" velocity="2"/>
+  </joint>
+
+  <!-- ^2T_3: xyz = [35.64, 230.02, 0] mm, R = Rz(-theta_3) -->
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <origin xyz="0.03564 0.23002 0" rpy="0 0 0"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-3.14159265359" upper="3.14159265359" effort="10" velocity="2"/>
+  </joint>
+
+  <!-- ^3T_4: xyz = [241.64, 0, 0] mm, R0 = Rz(pi) * Ry(-pi/2), variable Rz(theta_4) -->
+  <joint name="joint_4" type="revolute">
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <origin xyz="0.24164 0 0" rpy="0 -1.57079632679 3.14159265359"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159265359" upper="3.14159265359" effort="10" velocity="2"/>
+  </joint>
+
+  <!-- ^4T_5 left finger: variable Rz(theta_5) -->
+  <joint name="joint_5" type="revolute">
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <origin xyz="0.0121 -0.02478 0.01835" rpy="0 -1.57079632679 1.57079632679"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159265359" upper="3.14159265359" effort="10" velocity="2"/>
+  </joint>
+
+  <!-- ^5T_pen_tip: xyz = [34.31, -80.12, -26.72] mm, R = Rx(-pi/2) -->
+  <joint name="pen_tip_fixed_joint" type="fixed">
+    <parent link="link_5"/>
+    <child link="pen_tip"/>
+    <origin xyz="0.03431 -0.08012 -0.02672" rpy="-1.57079632679 0 0"/>
+  </joint>
+</robot>
