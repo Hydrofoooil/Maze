@@ -28,7 +28,8 @@ from isaacsim.sensors.camera import Camera
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 URDF = os.path.join(REPO, "urdf", "five_dof_arm.urdf")
-OUT = os.path.join(REPO, "arm_draw_circle.mp4")
+OUT = os.path.join(REPO, "arm_sim", "video", "arm_draw_circle.mp4")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
 FPS, W, H = 30, 1280, 720
 
 # 纸面: 30cm(沿X,前方) x 21cm(沿Y), 放在底座正前方的地面上

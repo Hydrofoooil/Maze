@@ -234,7 +234,10 @@ def main():
     ap.add_argument("--inflate", type=int, default=1, help="机器人半径(栅格格数)")
     ap.add_argument("--close", type=int, default=5, help="补墙缝的闭运算核大小")
     ap.add_argument("--grid-max", type=int, default=400, help="搜索栅格最长边")
-    ap.add_argument("--debug", metavar="DIR", help="保存中间结果")
+    ap.add_argument("--debug", metavar="DIR",
+                    default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "outputs", "image"),
+                    help="各步骤中间图目录（默认 outputs/image，每次覆盖）")
     ap.add_argument("--auto", action="store_true",
                     help="用自动检测纸张边界 (默认是手动点选4角)")
     ap.add_argument("--corners", metavar="\"x1,y1 x2,y2 x3,y3 x4,y4\"",

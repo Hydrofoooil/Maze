@@ -22,17 +22,18 @@
 
 可调参数：`--inflate` 机器人半径(**栅格格数**，与分辨率无关，默认1；调大更安全但易堵)、
 `--close` 补墙缝核(默认5)、`--grid-max` 搜索栅格最长边(默认400)。
-排查时看 `debug/6_occupancy.png`（白=可走）确认墙体连续、通道没被堵死。
+排查时看 `outputs/image/6_occupancy.png`（白=可走）确认墙体连续、通道没被堵死
+（`--debug` 默认输出到 `outputs/image`，每次覆盖）。
 
 ## 三、机械臂仿真绘制 (arm_sim)
 
 把规划好的迷宫路径交给一只 5-DOF 机械臂，在 NVIDIA Isaac Sim 里用笔竖直地描出来，
-离屏渲染成 mp4。三个脚本（视频都输出到仓库根目录）：
+离屏渲染成 mp4。三个脚本（视频都输出到 `arm_sim/video/`）：
 
-- `record_video.py`  —— 5 个关节按正弦编排自由运动，纯演示 → `arm_motion.mp4`
-- `draw_circle.py`   —— 笔尖在纸面上画一个圆，验证 FK/IK 链路 → `arm_draw_circle.mp4`
+- `record_video.py`  —— 5 个关节按正弦编排自由运动，纯演示 → `arm_sim/video/arm_motion.mp4`
+- `draw_circle.py`   —— 笔尖在纸面上画一个圆，验证 FK/IK 链路 → `arm_sim/video/arm_draw_circle.mp4`
 - `draw_maze.py`     —— 自动解算 `samples/test_0.jpg` 的迷宫路径，再让笔尖沿路径描画
-  （内部调用第二步的规划，固定 `auto=True` 不弹窗）→ `arm_draw_maze.mp4`
+  （内部调用第二步的规划，固定 `auto=True` 不弹窗）→ `arm_sim/video/arm_draw_maze.mp4`
 
 运动学在 `arm_kinematics.py`（纯 numpy，不依赖 Isaac）：
 - FK 按 URDF 里各关节的变换链式相乘，已和 Isaac 实际笔尖位姿对拍到 0.00mm
@@ -48,12 +49,12 @@
 ```bash
 # 在 Slurm 集群上提交（推荐，自动申请 GPU）
 sbatch arm_sim/run_draw_maze.sh
-#   日志: arm_sim/logs/draw_maze_<JOBID>.log    视频: arm_draw_maze.mp4
+#   日志: arm_sim/logs/draw_maze_<JOBID>.log    视频: arm_sim/video/arm_draw_maze.mp4
 
 # 或在有 GPU 的机器上直接跑
 export OMNI_KIT_ACCEPT_EULA=YES        # 接受 Omniverse EULA（首次必需）
 conda activate dexbench
-python arm_sim/draw_maze.py            # 或 draw_circle.py / record_video.py
+python arm_sim/draw_maze.py            # 或 draw_circle.py / record_video.py（输出到 arm_sim/video/）
 
 # 只校验 FK/IK + 取景一帧（不出整段视频，快）
 MAZE_FRAMETEST=1 python arm_sim/draw_maze.py
@@ -84,6 +85,7 @@ USB 串口，所以经一条 TCP 链路转发。
 
 | 仓库文件 | 部署到 | 角色 |
 |---|---|---|
+| `arm_real_client/robot_config.py` | 上位机（本机） | 下位机 IP / 端口集中配置（改地址只动这里） |
 | `arm_real_client/robot_client.py` | 上位机（本机） | 发请求的客户端封装 |
 | `arm_real_server/robot_server.py` | 下位机 WSL（如 `~/robot_arm/`） | 接收轨迹、限幅、按时执行、转发 |
 | `arm_real_server/serial_bridge.py` | 下位机 Windows（如桌面） | 把 TCP 数据写入 COM4 串口 |
@@ -96,12 +98,16 @@ USB 串口，所以经一条 TCP 链路转发。
 {"T":122,"b":0,"s":0,"e":0,"w":0,"h":0,"spd":10,"acc":10}
 ```
 
-`b` 底盘 base、`s` 肩 shoulder、`e` 肘 elbow、`w` 腕 wrist、`h` 夹爪 hand、`spd` 速度、`acc` 加速度。
+`b` 底盘 base、`s` 肩 shoulder、`e` 肘 elbow、`w` 腕 wrist、`h` 末端、`spd` 速度、`acc` 加速度。
 robot_server 会对每个关节做限幅（`make_arm_cmd`）：
 
 ```text
-b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -45~45
+b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -180~180
 ```
+
+> 注：原装 `h` 是夹爪（±45）。本机已**拆除夹爪、换成与笔固定的旋转连接件**，所以 `h` 现在是
+> 「笔旋转关节」、限幅放宽到 ±180。画竖直笔的 IK 解需手腕 `w` 约 -93°，超 ±90 的部分被 clamp
+> 到 -90（笔约 3° 恒定倾斜，画线无碍）；若确认手腕舵机物理能转过 ±90，可放宽 `w`。
 
 ### 4.3 启动顺序（每次实机运行前）
 
@@ -126,10 +132,12 @@ b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -45~45
    netsh advfirewall firewall add rule name="Robot Server 9001 to WSL" dir=in action=allow protocol=TCP localport=9001
    ```
 
-4. **上位机** 用 robot_client 发指令（`host` 填下位机地址，当前 `10.196.101.150`，`port=9001`）：
+4. **上位机** 用 robot_client 发指令。下位机经 **tailscale** 接入，IP 固定为 `100.127.110.20`
+   （不随 WSL 重启 / 局域网变化，无需每次查 WSL 动态 IP），已配在 `robot_config.py`，
+   `RobotClient()` 默认就用它：
    ```python
    from robot_client import RobotClient
-   robot = RobotClient(host="10.196.101.150", port=9001)
+   robot = RobotClient()              # host/port 取自 robot_config
    print(robot.ping())
    pts = [{"b": 0,  "s": 0, "e": 0, "w": 0, "h": 0},
           {"b": 30, "s": 0, "e": 0, "w": 0, "h": 0},
@@ -137,7 +145,7 @@ b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -45~45
    print(robot.trajectory(pts, dt=1.0, traj_id="test", spd=10, acc=10))
    print(robot.status())
    ```
-   连通性自测：`nc -vz 10.196.101.150 9001`。注意 **9001 通、9000 不通是正常的**——9000 在 WSL
+   连通性自测：`nc -vz 100.127.110.20 9001`。注意 **9001 通、9000 不通是正常的**——9000 在 WSL
    内部，对外只通过 portproxy 暴露 9001。
 
 ### 4.4 上位机请求类型
@@ -148,7 +156,8 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 - **joint**：单点控制 `{"type":"joint","b":30,...,"spd":10,"acc":10}`，server 限幅后转成 `T=122`
   串口指令。轨迹执行期间会拒绝单点（需先 stop）。
 - **trajectory**：异步下发整条轨迹（`points` + `dt` + `spd/acc`）。返回 `accepted` 只表示**已接收，
-  不代表执行完成**；server 用独立线程按 `dt` 逐点发送。
+  不代表执行完成**；server 用独立线程**逐点闭环**执行——发一个点后轮询 `T=105` 状态、检测「角度收敛」
+  （机械臂停止运动）才发下一个；探测不到状态返回时回退按 `dt` 定时。
 - **status**：查本地执行状态 `server_state`，字段 `status`（idle/running/done/stopped/error）、
   `traj_id`、`current_index`、`total_points` 等。
 - **state**：向机械臂查 `T=105`（当前主控板未稳定返回，系统不依赖它，以本地 `server_state` 为准）。
@@ -159,8 +168,17 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 已验证：WSL→bridge→COM4 链路通、单点 base 0→30→0、上位机经 9001 连通、trajectory 异步执行、
 status 查询、stop 中断。
 
-已知正常现象：serial_bridge 每个控制点建一次 TCP 连接、发完即断，所以会不停打印
-`Connected by ... / Client disconnected`，这是当前「每点重连」实现的预期行为。
+已知正常现象：每执行一个轨迹点，robot_server 会连一次 serial_bridge（连接内发控制点 + 轮询
+`T=105` 直到到位），所以 bridge 会打印一轮 `Connected by ... / TCP -> COM4 / Client disconnected`。
+
+实测硬件坑（决定了到位判据的实现）：
+- **`s`(肩)关节 `T=105` 返回符号与指令相反**（步进电机符号约定不同），但**实际动作方向正确**，
+  只是状态读数符号反——画图不受影响，无需改 `draw_maze_real`。
+- **`move` 字段不可靠**：机械臂停止后仍可能 `=1`，不能拿来判到位。
+- **`e` 在 0° 附近约 3.5° 稳态误差**（重力下垂）。
+- 因此 robot_server 用「**角度收敛**（关节不再变化=已停止）」判到位，而非比对目标角或看 `move`。
+- **`serial_bridge` 要能保活**：`recv` 加了空闲超时、串口断开自动重连、顶层异常不退出——机械臂
+  猛动时曾拉扯 USB 线 / 供电波动导致串口瞬断，把旧版 bridge 卡死或崩溃。
 
 排错要点：
 - 上位机连不上 9001 → 查 portproxy（`netsh interface portproxy show v4tov4`）和防火墙规则。
@@ -173,6 +191,32 @@ status 查询、stop 中断。
 回安全姿态 `safe_home`、更强急停、日志落盘、Windows/WSL 服务开机自启、serial_bridge 持久连接
 （减少每点重连）、轨迹合法性检查（最大步长 / 速度 / 点数）。
 
+### 4.7 从迷宫到实机绘制（一键脚本 draw_maze_real.py）
+
+`arm_real_client/draw_maze_real.py` 把整条链路串起来：迷宫照片 → maze_planner 规划路径
+→ 弧长重采样 → 纸面物理坐标 → arm_kinematics 的 5-DOF IK 解关节角 → 映射到 b/s/e/w/h → 下发。
+关节对应：URDF joint_1..5 = b/s/e/w/h，第 5 关节是改装后的笔旋转件（见 4.2）。
+
+每次规划产物（都在 `maze_planner/outputs/` 下，覆盖上一次）：
+- `trajectory/trajectory.json` —— 关节轨迹（b/s/e/w/h 度）+ 元数据，可被 `--from-file` 直接读
+- `image/0_input ~ 6_occupancy.png` —— 各步骤中间图
+- `image/planned.png` —— 规划轨迹投影在矫正(裁剪)后迷宫上的结果图
+
+只需 `maze` 环境（不依赖 GPU/Isaac）。默认 dry-run（只规划+校验，不碰硬件）：
+
+```bash
+conda activate maze
+# 规划：存轨迹/中间图/planned 图 + 校验各关节是否在限位内
+python arm_real_client/draw_maze_real.py
+# 首次上真机：从轨迹文件只发前 5 个点试探，确认笔落点/方向无误
+python arm_real_client/draw_maze_real.py --send --from-file --max-points 5
+# 确认后从轨迹文件直接发全程（不重新规划）
+python arm_real_client/draw_maze_real.py --send --from-file
+```
+
+常用参数：`--img` 换迷宫图、`--paper-cx` 纸张摆放距离(m)、`--dt` 点间隔、`--spd` 速度、
+`--n-waypoints` 轨迹点数。⚠️ 真发前确认下位机已按 4.3 启动、纸张就位、笔尖朝下；首次低速、人盯着。
+
 ## 目录结构
 > 所有命令都在仓库根目录 `Maze/` 下运行。
 
@@ -183,25 +227,28 @@ maze_planner/            迷宫重建 + 路径规划模块
   make_sample.py         生成合成测试照片（透视倾斜 + 不均匀光照 + 红/蓝标记）
   environment.yml        maze conda 环境定义
   samples/               测试输入照片（maze_photo.jpg, test_0.jpg）
-  outputs/               输出（scanned.png, planned.png, debug/）
+  outputs/               规划产物（每次覆盖）
+    image/               中间图（0_input ~ 6_occupancy）+ planned.png（轨迹投影结果图）
+    trajectory/          关节轨迹文件（trajectory.json）
 arm_sim/                 机械臂仿真绘制模块（Isaac Sim）
   arm_kinematics.py      5-DOF 正/逆运动学（纯 numpy）
   record_video.py        关节正弦运动演示
   draw_circle.py         画圆（验证 FK/IK）
   draw_maze.py           沿迷宫解路径描画
   run_draw_maze.sh       Slurm 提交脚本
+  video/                 仿真渲染的 mp4（arm_motion / arm_draw_circle / arm_draw_maze）
+  logs/                  Slurm 日志（git 忽略）
 urdf/                    机械臂模型
   five_dof_arm.urdf      5 个旋转关节，参数与 arm_kinematics 对应
   meshes/                各连杆 STL
-arm_real_client/         实机控制 - 上位机客户端
+arm_real_client/         实机控制 - 上位机（本机）
+  robot_config.py        下位机 IP / 端口集中配置（改地址只动这里）
   robot_client.py        RobotClient 封装（ping/joint/trajectory/status/stop）
   test_client.py         发送轨迹示例
+  draw_maze_real.py      迷宫→IK→关节轨迹→实机下发（一键，见 4.7）
 arm_real_server/         实机控制 - 下位机（部署到 Windows + WSL）
   robot_server.py        WSL 端：限幅 / 异步执行 / 状态 / stop，转发到 bridge
   serial_bridge.py       Windows 端：TCP ↔ COM4 串口
-arm_motion.mp4           关节运动演示（根目录产物）
-arm_draw_circle.mp4      画圆结果
-arm_draw_maze.mp4        迷宫描画结果
 ```
 走迷宫任务相关的所有文件都保存在本仓库内。
 
@@ -215,24 +262,25 @@ conda activate maze
 the library with ... GTK+ support`——这时要么换成非 headless 版，要么加 `--auto` 跳过点选。
 
 ## 用法
+
+`maze_planner.py` 一步完成「重建 + 规划」（内部先跑重建流水线、再做路径规划），输出带路径的结果图：
+
 ```bash
 # 处理你自己的照片：默认弹窗手动点选 4 个纸角
-python maze_planner/maze_planner.py input.jpg -o planned.png        # 重建 + 规划
-python maze_planner/maze_scanner.py input.jpg -o scanned.png        # 只重建
+python maze_planner/maze_planner.py input.jpg -o planned.png
 
 # 不想手动点选时：
-python maze_planner/maze_planner.py input.jpg -o planned.png --auto # 自动检测纸角
+python maze_planner/maze_planner.py input.jpg -o planned.png --auto   # 自动检测纸角
 python maze_planner/maze_planner.py input.jpg -o planned.png \
-       --corners "x1,y1 x2,y2 x3,y3 x4,y4"                          # 直接给坐标(原图像素)
+       --corners "x1,y1 x2,y2 x3,y3 x4,y4"                            # 直接给坐标(原图像素)
 
 # 合成图自测（边缘干净，用 --auto 免去弹窗）
 python maze_planner/make_sample.py
-python maze_planner/maze_planner.py maze_planner/samples/maze_photo.jpg \
-       -o maze_planner/outputs/planned.png --auto --debug maze_planner/outputs/debug
+python maze_planner/maze_planner.py maze_planner/samples/maze_photo.jpg -o planned.png --auto
 ```
 
-说明：手动选点需要图形界面。`--corners` 的坐标是**原图**像素，
-顺序任意（程序会自动排成左上/右上/右下/左下）。`--debug DIR` 会保存各步骤中间图。
+说明：手动选点需要图形界面。`--corners` 的坐标是**原图**像素，顺序任意（程序会自动排成
+左上/右上/右下/左下）。各步骤中间图默认保存到 `outputs/image`（每次覆盖），`--debug DIR` 可改目录。
 
 ## 远程使用（SSH + X11 转发）
 

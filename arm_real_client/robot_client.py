@@ -2,9 +2,11 @@ import socket
 import json
 import time
 
+from robot_config import ROBOT_HOST, ROBOT_PORT
+
 
 class RobotClient:
-    def __init__(self, host="10.196.101.150", port=9001, timeout=5):
+    def __init__(self, host=ROBOT_HOST, port=ROBOT_PORT, timeout=5):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -54,7 +56,7 @@ class RobotClient:
 
 
 if __name__ == "__main__":
-    robot = RobotClient(host="10.196.101.150", port=9001)
+    robot = RobotClient()
 
     print("ping:", robot.ping())
 

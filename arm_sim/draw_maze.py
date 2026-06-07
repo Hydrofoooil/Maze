@@ -49,7 +49,8 @@ def resample(pts, n):
 
 # === 先在 Isaac 之外把迷宫解算好 ===========================================
 print("[maze ] 规划迷宫解 ...", flush=True)
-pts, warped, binary, start_xy, goal_xy = solve_path(MAZE_IMG, auto=True)
+_IMG_DIR = os.path.join(REPO, "maze_planner", "outputs", "image")
+pts, warped, binary, start_xy, goal_xy = solve_path(MAZE_IMG, auto=True, debug_dir=_IMG_DIR)
 himg, wimg = binary.shape[:2]
 path_px = resample(pts, N_WAYPOINTS)
 
@@ -77,7 +78,8 @@ from isaacsim.sensors.camera import Camera
 from arm_kinematics import fk_M5, fk_nib_tail, fk_true_pen, fk_pos, ik, _PEN_T
 
 URDF = os.path.join(REPO, "urdf", "five_dof_arm.urdf")
-OUT = os.path.join(REPO, "arm_draw_maze.mp4")
+OUT = os.path.join(REPO, "arm_sim", "video", "arm_draw_maze.mp4")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
 
 def aim_camera(stage, cam_path, eye, target, up=(0, 0, 1)):

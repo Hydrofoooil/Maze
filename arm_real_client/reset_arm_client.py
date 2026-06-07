@@ -1,6 +1,6 @@
 from robot_client import RobotClient
 
-robot = RobotClient(host="10.196.101.150", port=9001)
+robot = RobotClient()
 
 points = [
     {"b": 10, "s": 0, "e": 0, "w": 0, "h": 0},

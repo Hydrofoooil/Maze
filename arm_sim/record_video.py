@@ -26,7 +26,8 @@ from isaacsim.sensors.camera import Camera
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 URDF = os.path.join(REPO, "urdf", "five_dof_arm.urdf")
-OUT = os.path.join(REPO, "arm_motion.mp4")
+OUT = os.path.join(REPO, "arm_sim", "video", "arm_motion.mp4")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
 FPS = 30
 DURATION = 8.0          # 秒
