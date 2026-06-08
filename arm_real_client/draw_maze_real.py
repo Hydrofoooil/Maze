@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from maze_planner import solve_path           # noqa: E402
 from arm_kinematics import ik                  # noqa: E402
 from robot_client import RobotClient           # noqa: E402
-from robot_config import ROBOT_HOST, ROBOT_PORT  # noqa: E402
+from robot_config import ROBOT_HOST, ROBOT_PORT, DEFAULT_SPD, DEFAULT_ACC  # noqa: E402
 
 # 规划产物目录（每次覆盖）
 OUT_DIR = os.path.join(REPO, "maze_planner", "outputs")
@@ -164,8 +164,8 @@ def main():
     ap.add_argument("--host", default=ROBOT_HOST, help="下位机地址（默认取自 robot_config）")
     ap.add_argument("--port", type=int, default=ROBOT_PORT, help="下位机端口（默认取自 robot_config）")
     ap.add_argument("--dt", type=float, default=0.3, help="相邻点时间间隔(s)")
-    ap.add_argument("--spd", type=int, default=10, help="关节角速度(°/s)")
-    ap.add_argument("--acc", type=int, default=10, help="关节角加速度")
+    ap.add_argument("--spd", type=int, default=DEFAULT_SPD, help="关节角速度(°/s)，默认取自 robot_config")
+    ap.add_argument("--acc", type=int, default=DEFAULT_ACC, help="关节角加速度，默认取自 robot_config")
     args = ap.parse_args()
 
     if args.from_file is not None:

@@ -2,7 +2,7 @@ import socket
 import json
 import time
 
-from robot_config import ROBOT_HOST, ROBOT_PORT
+from robot_config import ROBOT_HOST, ROBOT_PORT, DEFAULT_SPD, DEFAULT_ACC
 
 
 class RobotClient:
@@ -32,7 +32,7 @@ class RobotClient:
     def stop(self):
         return self.request({"type": "stop"})
 
-    def joint(self, b=0, s=0, e=0, w=0, h=0, spd=10, acc=10):
+    def joint(self, b=0, s=0, e=0, w=0, h=0, spd=DEFAULT_SPD, acc=DEFAULT_ACC):
         return self.request({
             "type": "joint",
             "b": b,
@@ -44,7 +44,7 @@ class RobotClient:
             "acc": acc,
         })
 
-    def trajectory(self, points, dt=0.1, traj_id="traj", spd=10, acc=10):
+    def trajectory(self, points, dt=0.1, traj_id="traj", spd=DEFAULT_SPD, acc=DEFAULT_ACC):
         return self.request({
             "type": "trajectory",
             "traj_id": traj_id,
@@ -70,9 +70,7 @@ if __name__ == "__main__":
         points,
         dt=1.0,
         traj_id="upper_machine_test",
-        spd=10,
-        acc=10,
-    ))
+    ))   # spd/acc 用默认（robot_config 的 DEFAULT_SPD/DEFAULT_ACC）
 
     time.sleep(0.5)
     print("status:", robot.status())

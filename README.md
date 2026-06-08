@@ -63,32 +63,27 @@ MAZE_FRAMETEST=1 python arm_sim/draw_maze.py
 ## 四、实机控制（真实机械臂）
 
 前三步都在上位机（这台跑规划/仿真的机器）完成。要把规划好的关节轨迹发给**真实机械臂**，
-还需要一台下位机。下位机是 Windows + WSL：机械臂通过 USB-C 接 Windows，识别为
-`USB-SERIAL CH340 (COM4)`（另需 12V DC 单独供电，USB-C 只做通信）。WSL 不能直接访问
-USB 串口，所以经一条 TCP 链路转发。
+还需要一台下位机。下位机是 **Windows**：机械臂通过 USB-C 接 Windows，识别为
+`USB-SERIAL CH340 (COM4)`（另需 12V DC 单独供电，USB-C 只做通信）。`robot_server.py` 直接在
+Windows 上用 pyserial 读写 COM4、并对上位机提供 TCP 接口——一个进程搞定，无需 WSL / 串口桥 / portproxy。
 
 ### 4.1 通信链路
 
 ```text
 上位机 robot_client.py
-    ↓ TCP（对外 9001）
-下位机 Windows portproxy :9001  →  127.0.0.1:9000
-    ↓
-下位机 WSL robot_server.py :9000      （关节限幅 / 异步执行 / 状态查询 / stop）
-    ↓ TCP 127.0.0.1:9100
-下位机 Windows serial_bridge.py :9100
+    ↓ TCP（tailscale，对外 9001）
+下位机 Windows robot_server.py :9001   （关节限幅 / 逐点闭环到位 / 状态查询 / stop）
     ↓ pyserial COM4 @ 115200
 机械臂主控板
 ```
 
-仓库里的三个文件对应链路里的三个角色：
+仓库里的文件对应链路里的角色：
 
 | 仓库文件 | 部署到 | 角色 |
 |---|---|---|
 | `arm_real_client/robot_config.py` | 上位机（本机） | 下位机 IP / 端口集中配置（改地址只动这里） |
 | `arm_real_client/robot_client.py` | 上位机（本机） | 发请求的客户端封装 |
-| `arm_real_server/robot_server.py` | 下位机 WSL（如 `~/robot_arm/`） | 接收轨迹、限幅、按时执行、转发 |
-| `arm_real_server/serial_bridge.py` | 下位机 Windows（如桌面） | 把 TCP 数据写入 COM4 串口 |
+| `arm_real_server/robot_server.py` | 下位机 Windows | 收轨迹、限幅、逐点闭环到位、pyserial 直写 COM4 |
 
 ### 4.2 底层协议与关节限幅
 
@@ -111,30 +106,16 @@ b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -180~180
 
 ### 4.3 启动顺序（每次实机运行前）
 
-1. **下位机 Windows** 起 serial bridge（监听 9100，写 COM4），窗口别关：
+1. **下位机 Windows** 起 robot server（pyserial 直连 COM4、监听 9001），窗口别关：
    ```powershell
-   cd $HOME\Desktop
-   python serial_bridge.py
+   python robot_server.py
    ```
-   正常输出 `[OK] Opened serial COM4 @ 115200` / `[OK] Listening on 0.0.0.0:9100`。
+   正常输出 `[OK] Opened serial COM4 @ 115200` /
+   `[OK] robot_server (Windows direct-serial) listening on 0.0.0.0:9001`。
+   首次需 `pip install pyserial`；Windows 防火墙放行 9001（一次性）。
 
-2. **下位机 WSL** 起 robot server（监听 9000，目标 bridge 9100），窗口别关：
-   ```bash
-   cd ~/robot_arm
-   python3 robot_server.py
-   ```
-   正常输出 `[OK] robot_server listening on 0.0.0.0:9000`。
-
-3. **下位机 Windows** 配 portproxy + 防火墙，把对外 9001 转发到 WSL 的 9000
-   （管理员 PowerShell，一次性配置，重启后需确认仍在）：
-   ```powershell
-   netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=9001 connectaddress=127.0.0.1 connectport=9000
-   netsh advfirewall firewall add rule name="Robot Server 9001 to WSL" dir=in action=allow protocol=TCP localport=9001
-   ```
-
-4. **上位机** 用 robot_client 发指令。下位机经 **tailscale** 接入，IP 固定为 `100.127.110.20`
-   （不随 WSL 重启 / 局域网变化，无需每次查 WSL 动态 IP），已配在 `robot_config.py`，
-   `RobotClient()` 默认就用它：
+2. **上位机** 用 robot_client 发指令。下位机经 **tailscale** 接入，IP 固定为 `100.127.110.20`
+   （已配在 `robot_config.py`，`RobotClient()` 默认就用它）：
    ```python
    from robot_client import RobotClient
    robot = RobotClient()              # host/port 取自 robot_config
@@ -145,8 +126,7 @@ b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -180~180
    print(robot.trajectory(pts, dt=1.0, traj_id="test", spd=10, acc=10))
    print(robot.status())
    ```
-   连通性自测：`nc -vz 100.127.110.20 9001`。注意 **9001 通、9000 不通是正常的**——9000 在 WSL
-   内部，对外只通过 portproxy 暴露 9001。
+   连通性自测：`nc -vz 100.127.110.20 9001`。
 
 ### 4.4 上位机请求类型
 
@@ -165,11 +145,7 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 
 ### 4.5 已验证 & 已知现象
 
-已验证：WSL→bridge→COM4 链路通、单点 base 0→30→0、上位机经 9001 连通、trajectory 异步执行、
-status 查询、stop 中断。
-
-已知正常现象：每执行一个轨迹点，robot_server 会连一次 serial_bridge（连接内发控制点 + 轮询
-`T=105` 直到到位），所以 bridge 会打印一轮 `Connected by ... / TCP -> COM4 / Client disconnected`。
+已验证：单点 base 0→30→0、上位机经 9001 连通、trajectory 逐点闭环到位、status 查询、stop 中断。
 
 实测硬件坑（决定了到位判据的实现）：
 - **`s`(肩)关节 `T=105` 返回符号与指令相反**（步进电机符号约定不同），但**实际动作方向正确**，
@@ -177,19 +153,19 @@ status 查询、stop 中断。
 - **`move` 字段不可靠**：机械臂停止后仍可能 `=1`，不能拿来判到位。
 - **`e` 在 0° 附近约 3.5° 稳态误差**（重力下垂）。
 - 因此 robot_server 用「**角度收敛**（关节不再变化=已停止）」判到位，而非比对目标角或看 `move`。
-- **`serial_bridge` 要能保活**：`recv` 加了空闲超时、串口断开自动重连、顶层异常不退出——机械臂
-  猛动时曾拉扯 USB 线 / 供电波动导致串口瞬断，把旧版 bridge 卡死或崩溃。
+- **串口物理要稳**：机械臂猛动时曾拉扯 USB 线 / 供电波动导致串口瞬断（**数据线没插好时
+  `T=105` 返回全 `\x00`**）；接线插牢、12V 供电稳。`robot_server` 已对 `SerialException` 容错。
 
 排错要点：
-- 上位机连不上 9001 → 查 portproxy（`netsh interface portproxy show v4tov4`）和防火墙规则。
-- server 收到轨迹但机械臂不动 → 查 serial_bridge 是否在跑、`nc -vz 127.0.0.1 9100`。
+- 上位机连不上 9001 → 查 Windows 防火墙是否放行 9001、tailscale 是否在线。
+- `T=105` 读不到 / 返回 `\x00` → 多半是数据线/接线问题（RX 没接好），换线试。
 - 单点能动、trajectory 不动 → 确认新轨迹开始 `stop_event.clear()`、等待用 `stop_event.wait(dt)`
   而非 `time.sleep(dt)`（已在 robot_server 实现）。
 
 ### 4.6 后续可改进
 
-回安全姿态 `safe_home`、更强急停、日志落盘、Windows/WSL 服务开机自启、serial_bridge 持久连接
-（减少每点重连）、轨迹合法性检查（最大步长 / 速度 / 点数）。
+回安全姿态 `safe_home`、更强急停、日志落盘、robot_server 开机自启、画线连续流式（不逐点等到位、
+更流畅）、轨迹合法性检查（最大步长 / 速度 / 点数）。
 
 ### 4.7 从迷宫到实机绘制（一键脚本 draw_maze_real.py）
 
@@ -246,9 +222,8 @@ arm_real_client/         实机控制 - 上位机（本机）
   robot_client.py        RobotClient 封装（ping/joint/trajectory/status/stop）
   test_client.py         发送轨迹示例
   draw_maze_real.py      迷宫→IK→关节轨迹→实机下发（一键，见 4.7）
-arm_real_server/         实机控制 - 下位机（部署到 Windows + WSL）
-  robot_server.py        WSL 端：限幅 / 异步执行 / 状态 / stop，转发到 bridge
-  serial_bridge.py       Windows 端：TCP ↔ COM4 串口
+arm_real_server/         实机控制 - 下位机（部署到 Windows）
+  robot_server.py        Windows 端：限幅 / 逐点闭环到位 / pyserial 直连 COM4
 ```
 走迷宫任务相关的所有文件都保存在本仓库内。
 
