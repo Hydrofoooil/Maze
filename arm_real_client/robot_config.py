@@ -7,7 +7,10 @@ draw_maze_real）都从这里导入。改这里一处即可全局生效，避免
 ROBOT_HOST = "100.127.110.20"   # 下位机地址（tailscale 固定 IP）
 ROBOT_PORT = 9001               # 下位机 robot_server 监听端口
 
-# 运动参数默认值：spd 角速度(°/s)、acc 角加速度。改这里，所有上位机入口统一生效；
-# 命令行/调用处显式传参仍可临时覆盖（如 draw_maze_real.py --acc 5）。
-DEFAULT_SPD = 10
+# 运动参数默认值：spd 角速度(°/s)、acc 角加速度、dt 相邻轨迹点的时间间隔(s)。
+# 改这里，所有上位机入口统一生效；命令行/调用处显式传参仍可临时覆盖（如 --acc 5 / --dt 0.1）。
+# dt 语义：开环版(robot_server_openloop)是「点间隔」——越小线越连续越快；
+#          闭环版(robot_server)是「到位后额外停留时长」。
+DEFAULT_SPD = 5
 DEFAULT_ACC = 5
+DEFAULT_DT = 0.1

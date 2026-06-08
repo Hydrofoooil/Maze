@@ -2,7 +2,7 @@ import socket
 import json
 import time
 
-from robot_config import ROBOT_HOST, ROBOT_PORT, DEFAULT_SPD, DEFAULT_ACC
+from robot_config import ROBOT_HOST, ROBOT_PORT, DEFAULT_SPD, DEFAULT_ACC, DEFAULT_DT
 
 
 class RobotClient:
@@ -44,7 +44,7 @@ class RobotClient:
             "acc": acc,
         })
 
-    def trajectory(self, points, dt=0.1, traj_id="traj", spd=DEFAULT_SPD, acc=DEFAULT_ACC):
+    def trajectory(self, points, dt=DEFAULT_DT, traj_id="traj", spd=DEFAULT_SPD, acc=DEFAULT_ACC):
         return self.request({
             "type": "trajectory",
             "traj_id": traj_id,
