@@ -24,11 +24,11 @@ from typing import Dict, Any, List, Optional
 import serial
 
 # ---- 对上位机的 TCP 服务 ----
-SERVER_HOST = "0.0.0.0"
+SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 9001          # 直接监听对外端口（不再经 portproxy 9001->9000）
 
 # ---- 机械臂串口 ----
-SERIAL_PORT = "COM4"
+SERIAL_PORT = "COM10"
 BAUD = 115200
 
 LIMITS = {

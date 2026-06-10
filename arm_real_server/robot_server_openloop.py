@@ -22,7 +22,7 @@ from typing import Dict, Any, List, Optional
 import serial
 
 # ---- 对上位机的 TCP 服务 ----
-SERVER_HOST = "0.0.0.0"
+SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 9001
 
 # ---- 机械臂串口 ----
