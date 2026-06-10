@@ -9,6 +9,14 @@
 
 import numpy as np
 
+try:
+    from scipy.optimize import minimize
+except ImportError as exc:
+    raise ImportError(
+        "scipy is required for bounded IK. Install it with "
+        "`conda install scipy -c conda-forge` or update the maze env."
+    ) from exc
+
 
 def _T(x, y, z):
     M = np.eye(4); M[:3, 3] = (x, y, z); return M
@@ -38,9 +46,14 @@ _JOINTS = [
     (_T(0.0121, -0.02478, 0.01835),          _rpy(0, -_PI/2, _PI/2),    +1),  # j5 axis(0,0, 1)
 ]
 _PEN_T = np.array([0.03431, -0.08012, -0.02672])   # URDF pen_tip 偏移 (只用于和 Isaac 对拍)
-_NIB = np.array([0.0343, 0.0730, 0.03033])         # +Y 端 = 笔尖(写字端)
+_NIB = np.array([0.0343, 0.0775, 0.03033])         # +Y 端 = 笔尖(写字端)
 _TAIL = np.array([0.0369, -0.0399, 0.03033])       # -Y 端 = 笔尾
 _A_DES = np.array([0.0, 0.0, -1.0])
+_JOINT_LO = np.radians([-180.0, -90.0, -90.0, -90.0, -180.0])
+_JOINT_HI = np.radians([ 180.0,  90.0,  90.0,  90.0,  180.0])
+_BOUNDS = tuple(zip(_JOINT_LO, _JOINT_HI))
+_POS_TOL = 5e-5
+_CONTINUITY_W = 1e-4
 
 
 def fk_M5(q):
@@ -68,12 +81,52 @@ def fk_pos(q):
     return fk_nib_tail(q)[0]
 
 
+def jacobian_pos(q, eps=1e-5):
+    """Numerical pen-tip position Jacobian d(x,y,z)/d(q1..q5), q in radians."""
+    q = np.asarray(q, float)
+    base = fk_pos(q)
+    J = np.zeros((3, 5))
+    for i in range(5):
+        dq = np.zeros(5)
+        dq[i] = eps
+        J[:, i] = (fk_pos(q + dq) - base) / eps
+    return J
+
+
 def _out_posdir(q, w_o):
     """输出向量: [笔尖位置(3), w_o*笔轴单位向量(3)]。"""
     nib, tail = fk_nib_tail(q)
     a = nib - tail
     a /= np.linalg.norm(a)
     return np.concatenate([nib, w_o * a])
+
+
+def _pen_axis(q):
+    nib, tail = fk_nib_tail(q)
+    a = nib - tail
+    return a / np.linalg.norm(a)
+
+
+def _pen_pitch_roll_deg(q):
+    a = _pen_axis(q)
+    pitch = np.degrees(np.arctan2(a[0], -a[2]))
+    roll = np.degrees(np.arctan2(a[1], -a[2]))
+    return float(pitch), float(roll)
+
+
+def _print_ik_debug(target, q):
+    nib = fk_pos(q)
+    err_mm = (nib - target) * 1000.0
+    pitch, roll = _pen_pitch_roll_deg(q)
+    print(
+        "[ik] "
+        f"xyz_m=({nib[0]:.5f}, {nib[1]:.5f}, {nib[2]:.5f}) "
+        f"target_m=({target[0]:.5f}, {target[1]:.5f}, {target[2]:.5f}) "
+        f"err_mm=({err_mm[0]:+.3f}, {err_mm[1]:+.3f}, {err_mm[2]:+.3f}) "
+        f"pitch_deg={pitch:+.3f} roll_deg={roll:+.3f} "
+        f"pitch_err_deg={pitch:+.3f} roll_err_deg={roll:+.3f}",
+        flush=True,
+    )
 
 
 def _dls(q, out_fn, goal, ndim, lam=0.05, lim=_PI):
@@ -88,7 +141,7 @@ def _dls(q, out_fn, goal, ndim, lam=0.05, lim=_PI):
     return np.clip(q + np.clip(dtheta, -0.2, 0.2), -lim, lim)
 
 
-def ik(target, q0, lim=_PI):
+def _ik_dls_legacy(target, q0, lim=_PI):
     """两段式: 先纯位置收敛到目标, 再加笔轴竖直向下约束。
     返回 (q, 位置残差, 笔轴偏离竖直角度°)。"""
     q = np.array(q0, float)
@@ -108,3 +161,68 @@ def ik(target, q0, lim=_PI):
     a = (nib - tail) / np.linalg.norm(nib - tail)
     tilt = np.degrees(np.arccos(np.clip(-a[2], -1, 1)))
     return q, float(np.linalg.norm(target - nib)), float(tilt)
+
+
+def ik(target, q0, lim=None, debug=True):
+    """Bounded IK with position priority and yaw-free pen attitude optimization.
+
+    Priority:
+      1. Find the best reachable pen-tip xyz inside real mechanical limits.
+      2. If xyz is reachable, keep xyz fixed and minimize tilt from vertical
+         down. This minimizes pitch/roll and leaves yaw unconstrained.
+
+    Returns (q, position_residual_m, tilt_from_vertical_down_deg).
+    """
+    del lim  # Kept for compatibility with older call sites.
+    target = np.asarray(target, float)
+    q_ref = np.clip(np.asarray(q0, float), _JOINT_LO, _JOINT_HI)
+
+    def pos_cost(q):
+        err = fk_pos(q) - target
+        return float(err @ err)
+
+    pos_res = minimize(
+        pos_cost,
+        q_ref,
+        method="SLSQP",
+        bounds=_BOUNDS,
+        options={"maxiter": 250, "ftol": 1e-12, "disp": False},
+    )
+    q_pos = np.clip(pos_res.x if pos_res.x is not None else q_ref,
+                    _JOINT_LO, _JOINT_HI)
+    pos_err = float(np.linalg.norm(fk_pos(q_pos) - target))
+
+    # If xyz is unreachable inside the real limits, do not trade position for
+    # attitude. Return the closest bounded pose and report the residual.
+    if pos_err > _POS_TOL:
+        a = _pen_axis(q_pos)
+        tilt = np.degrees(np.arccos(np.clip(-a[2], -1, 1)))
+        if debug:
+            _print_ik_debug(target, q_pos)
+        return q_pos, pos_err, float(tilt)
+
+    def orient_cost(q):
+        a = _pen_axis(q)
+        # Minimize angle to the downward pen axis. This ignores yaw.
+        return float((1.0 + a[2]) + _CONTINUITY_W * np.sum((q - q_ref) ** 2))
+
+    constraints = ({"type": "eq", "fun": lambda q: fk_pos(q) - target},)
+    orient_res = minimize(
+        orient_cost,
+        q_pos,
+        method="SLSQP",
+        bounds=_BOUNDS,
+        constraints=constraints,
+        options={"maxiter": 250, "ftol": 1e-12, "disp": False},
+    )
+
+    q = np.clip(orient_res.x if orient_res.x is not None else q_pos,
+                _JOINT_LO, _JOINT_HI)
+    if np.linalg.norm(fk_pos(q) - target) > max(_POS_TOL, pos_err * 2.0):
+        q = q_pos
+
+    a = _pen_axis(q)
+    tilt = np.degrees(np.arccos(np.clip(-a[2], -1, 1)))
+    if debug:
+        _print_ik_debug(target, q)
+    return q, float(np.linalg.norm(fk_pos(q) - target)), float(tilt)

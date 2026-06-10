@@ -102,7 +102,7 @@ def plan_joint_traj(img, n_waypoints, paper_cx, paper_cy, debug_dir):
     cv2.imwrite(PLANNED_FILE, vis)
     print(f"[plan] 轨迹投影图 -> {PLANNED_FILE}", flush=True)
 
-    qtraj, res, tilt = [], [], []
+    qtraj, res, tilt, targets = [], [], [], []
     q_seed = np.array([0.0, 1.0, 1.0, 0.0, 0.0])   # 朝前下方折叠的初始猜测
     for px, py in path_px:
         tgt = np.array(img_to_world(px, py, wimg, himg, paper_cx, paper_cy))
@@ -110,7 +110,8 @@ def plan_joint_traj(img, n_waypoints, paper_cx, paper_cy, debug_dir):
         qtraj.append(q_seed.copy())
         res.append(e)
         tilt.append(ti)
-    return np.array(qtraj), np.array(res), np.array(tilt)
+        targets.append(tgt.copy())
+    return np.array(qtraj), np.array(res), np.array(tilt), np.array(targets)
 
 
 def save_trajectory(points, meta, path=TRAJ_FILE):
@@ -163,7 +164,8 @@ def main():
                     help="真正下发到机械臂（默认 dry-run，只规划+校验不碰硬件）")
     ap.add_argument("--host", default=ROBOT_HOST, help="下位机地址（默认取自 robot_config）")
     ap.add_argument("--port", type=int, default=ROBOT_PORT, help="下位机端口（默认取自 robot_config）")
-    ap.add_argument("--dt", type=float, default=DEFAULT_DT, help="相邻点时间间隔(s)，默认取自 robot_config")
+    ap.add_argument("--dt", type=float, default=DEFAULT_DT,
+                    help="轨迹点时间间隔(s)")
     ap.add_argument("--spd", type=int, default=DEFAULT_SPD, help="关节角速度(°/s)，默认取自 robot_config")
     ap.add_argument("--acc", type=int, default=DEFAULT_ACC, help="关节角加速度，默认取自 robot_config")
     args = ap.parse_args()
@@ -171,12 +173,20 @@ def main():
     if args.from_file is not None:
         points, meta = load_trajectory(args.from_file)
     else:
-        qtraj, res, tilt = plan_joint_traj(args.img, args.n_waypoints,
-                                           args.paper_cx, args.paper_cy, IMAGE_DIR)
+        qtraj, res, tilt, targets = plan_joint_traj(args.img, args.n_waypoints,
+                                                    args.paper_cx, args.paper_cy, IMAGE_DIR)
         print(f"[ik] 位置残差: 最大={res.max() * 1000:.2f}mm 均值={res.mean() * 1000:.2f}mm | "
               f"笔轴偏离竖直: 最大={tilt.max():.2f}° 均值={tilt.mean():.2f}°", flush=True)
         deg = np.degrees(qtraj)             # (N,5)，列依次为 b,s,e,w,h
-        points = [{k: float(row[i]) for i, k in enumerate(JOINT_ORDER)} for row in deg]
+        points = []
+        for row, target in zip(deg, targets):
+            point = {k: float(row[i]) for i, k in enumerate(JOINT_ORDER)}
+            point.update({
+                "x": float(target[0]),
+                "y": float(target[1]),
+                "z": float(target[2]),
+            })
+            points.append(point)
         save_trajectory(points, {
             "source_image": args.img,
             "paper_cx": args.paper_cx, "paper_cy": args.paper_cy,
@@ -194,8 +204,9 @@ def main():
     over = check_limits(points)
 
     if not args.send:
-        print(f"[dry-run] 仅规划+校验，未下发。预计 {len(points)} 点 x dt={args.dt}s "
-              f"≈ {len(points) * args.dt:.0f}s。确认无误后加 --send。", flush=True)
+        print(f"[dry-run] 仅规划+校验，未下发。预计 {len(points)} 点 "
+              f"x dt={args.dt:.3f}s ≈ {len(points) * args.dt:.1f}s。"
+              f"确认无误后加 --send。", flush=True)
         return
 
     if over:
