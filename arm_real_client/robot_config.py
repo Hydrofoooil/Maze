@@ -12,5 +12,5 @@ ROBOT_PORT = 9001               # 下位机 robot_server 监听端口
 # dt 语义：开环版(robot_server_openloop)是「点间隔」——越小线越连续越快；
 #          闭环版(robot_server)是「到位后额外停留时长」。
 DEFAULT_SPD = 5
-DEFAULT_ACC = 5
+DEFAULT_ACC = 10
 DEFAULT_DT = 0.1
