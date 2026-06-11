@@ -1,13 +1,14 @@
 """
-5-DOF 机械臂的正/逆运动学 (纯 numpy, 不依赖 Isaac)。
+5-DOF 机械臂的正/逆运动学 (不依赖 Isaac)。
 
 - FK 依据 urdf/five_dof_arm.urdf 里给出的 origin/axis 链式相乘, 已和 Isaac
   实际 pen_tip 位姿对拍到 0.00mm。
 - 笔尖/笔尾取自 link_5.stl 主轴两端点 (PCA 求得)。
-- IK: 两段式阻尼最小二乘 (先位置, 再加"笔轴竖直向下"约束)。
+- IK: 带关节限位的 SLSQP 优化 (先位置, 再加"笔轴竖直向下"约束)。
 """
 
 import numpy as np
+from scipy.optimize import minimize
 
 
 def _T(x, y, z):
@@ -40,7 +41,11 @@ _JOINTS = [
 _PEN_T = np.array([0.03431, -0.08012, -0.02672])   # URDF pen_tip 偏移 (只用于和 Isaac 对拍)
 _NIB = np.array([0.0343, 0.0801, -0.0254])         # +Y 端 = 笔尖(写字端)
 _TAIL = np.array([0.0369, -0.0399, -0.0290])       # -Y 端 = 笔尾
-_A_DES = np.array([0.0, 0.0, -1.0])
+_JOINT_LO = np.radians([-180.0, -90.0, -90.0, -90.0, -45.0])
+_JOINT_HI = np.radians([ 180.0,  90.0,  90.0,  90.0,  45.0])
+_BOUNDS = tuple(zip(_JOINT_LO, _JOINT_HI))
+_POS_TOL = 5e-5
+_CONTINUITY_W = 1e-4
 
 
 def fk_M5(q):
@@ -68,43 +73,56 @@ def fk_pos(q):
     return fk_nib_tail(q)[0]
 
 
-def _out_posdir(q, w_o):
-    """输出向量: [笔尖位置(3), w_o*笔轴单位向量(3)]。"""
+def _pen_axis(q):
     nib, tail = fk_nib_tail(q)
     a = nib - tail
-    a /= np.linalg.norm(a)
-    return np.concatenate([nib, w_o * a])
+    return a / np.linalg.norm(a)
 
 
-def _dls(q, out_fn, goal, ndim, lam=0.05, lim=_PI):
-    """一步阻尼最小二乘: J=d(out)/dq, dq = J^T (JJ^T+λ²)^-1 (goal-out)。"""
-    base = out_fn(q)
-    r = goal - base
-    J = np.zeros((ndim, 5))
-    for i in range(5):
-        dq = np.zeros(5); dq[i] = 1e-5
-        J[:, i] = (out_fn(q + dq) - base) / 1e-5
-    dtheta = J.T @ np.linalg.solve(J @ J.T + (lam**2) * np.eye(ndim), r)
-    return np.clip(q + np.clip(dtheta, -0.2, 0.2), -lim, lim)
-
-
-def ik(target, q0, lim=_PI):
-    """两段式: 先纯位置收敛到目标, 再加笔轴竖直向下约束。
+def ik(target, q0, lim=None):
+    """带关节限位的两段式 IK: 先位置最优, 再在位置约束下优化笔轴竖直。
     返回 (q, 位置残差, 笔轴偏离竖直角度°)。"""
-    q = np.array(q0, float)
-    for _ in range(250):                          # 阶段1: 仅位置 (3D)
-        if np.linalg.norm(target - fk_pos(q)) < 5e-5:
-            break
-        q = _dls(q, fk_pos, target, 3, lim=lim)
-    w_o = 0.05                                    # 阶段2: 位置 + 笔轴竖直 (6D)
-    goal = np.concatenate([target, w_o * _A_DES])
-    for _ in range(250):
-        out = _out_posdir(q, w_o)
-        if np.linalg.norm(out[:3] - target) < 5e-5 and \
-           np.linalg.norm(out[3:] / w_o - _A_DES) < 1e-2:
-            break
-        q = _dls(q, lambda qq: _out_posdir(qq, w_o), goal, 6, lim=lim)
-    nib, tail = fk_nib_tail(q)
-    a = (nib - tail) / np.linalg.norm(nib - tail)
+    del lim  # 旧接口兼容；实际限位固定为真机可动范围。
+    target = np.asarray(target, float)
+    q_ref = np.clip(np.asarray(q0, float), _JOINT_LO, _JOINT_HI)
+
+    def pos_cost(q):
+        err = fk_pos(q) - target
+        return float(err @ err)
+
+    pos_res = minimize(
+        pos_cost,
+        q_ref,
+        method="SLSQP",
+        bounds=_BOUNDS,
+        options={"maxiter": 250, "ftol": 1e-12, "disp": False},
+    )
+    q_pos = np.clip(pos_res.x if pos_res.x is not None else q_ref,
+                    _JOINT_LO, _JOINT_HI)
+    pos_err = float(np.linalg.norm(fk_pos(q_pos) - target))
+
+    if pos_err > _POS_TOL:
+        a = _pen_axis(q_pos)
+        tilt = np.degrees(np.arccos(np.clip(-a[2], -1, 1)))
+        return q_pos, pos_err, float(tilt)
+
+    def orient_cost(q):
+        a = _pen_axis(q)
+        return float((1.0 + a[2]) + _CONTINUITY_W * np.sum((q - q_ref) ** 2))
+
+    orient_res = minimize(
+        orient_cost,
+        q_pos,
+        method="SLSQP",
+        bounds=_BOUNDS,
+        constraints=({"type": "eq", "fun": lambda q: fk_pos(q) - target},),
+        options={"maxiter": 250, "ftol": 1e-12, "disp": False},
+    )
+    q = np.clip(orient_res.x if orient_res.x is not None else q_pos,
+                _JOINT_LO, _JOINT_HI)
+    if np.linalg.norm(fk_pos(q) - target) > max(_POS_TOL, pos_err * 2.0):
+        q = q_pos
+
+    a = _pen_axis(q)
     tilt = np.degrees(np.arccos(np.clip(-a[2], -1, 1)))
-    return q, float(np.linalg.norm(target - nib)), float(tilt)
+    return q, float(np.linalg.norm(fk_pos(q) - target)), float(tilt)
