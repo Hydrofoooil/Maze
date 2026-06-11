@@ -79,7 +79,8 @@ def resample(pts, n):
     return np.c_[np.interp(s, d, P[:, 0]), np.interp(s, d, P[:, 1])]
 
 
-def plan_joint_traj(img, n_waypoints, paper_cx, paper_cy, debug_dir):
+def plan_joint_traj(img, n_waypoints, paper_cx, paper_cy, debug_dir,
+                    h_zero_offset_deg=0.0):
     """迷宫照片 -> 关节角轨迹(rad, N x 5)。返回 (qtraj, 位置残差, 笔轴偏离角)。
     debug_dir: 各步骤中间图保存目录（覆盖上一次）。"""
     print(f"[maze] 规划路径: {img}", flush=True)
@@ -104,9 +105,11 @@ def plan_joint_traj(img, n_waypoints, paper_cx, paper_cy, debug_dir):
 
     qtraj, res, tilt, targets = [], [], [], []
     q_seed = np.array([0.0, 1.0, 1.0, 0.0, 0.0])   # 朝前下方折叠的初始猜测
+    command_offsets = np.array([0.0, 0.0, 0.0, 0.0, float(h_zero_offset_deg)])
     for px, py in path_px:
         tgt = np.array(img_to_world(px, py, wimg, himg, paper_cx, paper_cy))
-        q_seed, e, ti = ik(tgt, q_seed)
+        q_seed, e, ti = ik(tgt, q_seed,
+                           command_offsets_deg=command_offsets)
         qtraj.append(q_seed.copy())
         res.append(e)
         tilt.append(ti)
@@ -168,16 +171,22 @@ def main():
                     help="轨迹点时间间隔(s)")
     ap.add_argument("--spd", type=int, default=DEFAULT_SPD, help="关节角速度(°/s)，默认取自 robot_config")
     ap.add_argument("--acc", type=int, default=DEFAULT_ACC, help="关节角加速度，默认取自 robot_config")
+    ap.add_argument("--h-zero-offset-deg", type=float, default=10.0,
+                    help="第 5 关节 h 的指令零位偏差(°)，规划后加到 h 指令上，默认 10")
     args = ap.parse_args()
 
     if args.from_file is not None:
         points, meta = load_trajectory(args.from_file)
     else:
-        qtraj, res, tilt, targets = plan_joint_traj(args.img, args.n_waypoints,
-                                                    args.paper_cx, args.paper_cy, IMAGE_DIR)
+        qtraj, res, tilt, targets = plan_joint_traj(
+            args.img, args.n_waypoints, args.paper_cx, args.paper_cy,
+            IMAGE_DIR, h_zero_offset_deg=args.h_zero_offset_deg)
         print(f"[ik] 位置残差: 最大={res.max() * 1000:.2f}mm 均值={res.mean() * 1000:.2f}mm | "
               f"笔轴偏离竖直: 最大={tilt.max():.2f}° 均值={tilt.mean():.2f}°", flush=True)
         deg = np.degrees(qtraj)             # (N,5)，列依次为 b,s,e,w,h
+        deg[:, JOINT_ORDER.index("h")] += float(args.h_zero_offset_deg)
+        print(f"[traj] h zero offset applied: {args.h_zero_offset_deg:+.2f} deg",
+              flush=True)
         points = []
         for row, target in zip(deg, targets):
             point = {k: float(row[i]) for i, k in enumerate(JOINT_ORDER)}
@@ -191,6 +200,7 @@ def main():
             "source_image": args.img,
             "paper_cx": args.paper_cx, "paper_cy": args.paper_cy,
             "n_waypoints": args.n_waypoints,
+            "h_zero_offset_deg": float(args.h_zero_offset_deg),
             "dt": args.dt, "spd": args.spd, "acc": args.acc,
             "ik_residual_mm_max": float(res.max() * 1000),
             "tilt_deg_max": float(tilt.max()),

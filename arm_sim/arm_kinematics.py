@@ -49,8 +49,8 @@ _PEN_T = np.array([0.03431, -0.08012, -0.02672])   # URDF pen_tip 偏移 (只用
 _NIB = np.array([0.0343, 0.0775, 0.03033])         # +Y 端 = 笔尖(写字端)
 _TAIL = np.array([0.0369, -0.0399, 0.03033])       # -Y 端 = 笔尾
 _A_DES = np.array([0.0, 0.0, -1.0])
-_JOINT_LO = np.radians([-180.0, -90.0, -90.0, -90.0, -180.0])
-_JOINT_HI = np.radians([ 180.0,  90.0,  90.0,  90.0,  180.0])
+_JOINT_LO = np.radians([-180.0, -90.0, -90.0, -90.0, -45.0])
+_JOINT_HI = np.radians([ 180.0,  90.0,  90.0,  90.0,  45.0])
 _BOUNDS = tuple(zip(_JOINT_LO, _JOINT_HI))
 _POS_TOL = 5e-5
 _CONTINUITY_W = 1e-4
@@ -163,7 +163,7 @@ def _ik_dls_legacy(target, q0, lim=_PI):
     return q, float(np.linalg.norm(target - nib)), float(tilt)
 
 
-def ik(target, q0, lim=None, debug=True):
+def ik(target, q0, lim=None, debug=True, command_offsets_deg=None):
     """Bounded IK with position priority and yaw-free pen attitude optimization.
 
     Priority:
@@ -175,7 +175,15 @@ def ik(target, q0, lim=None, debug=True):
     """
     del lim  # Kept for compatibility with older call sites.
     target = np.asarray(target, float)
-    q_ref = np.clip(np.asarray(q0, float), _JOINT_LO, _JOINT_HI)
+    if command_offsets_deg is None:
+        joint_lo, joint_hi, bounds = _JOINT_LO, _JOINT_HI, _BOUNDS
+    else:
+        offsets = np.radians(np.asarray(command_offsets_deg, dtype=float))
+        joint_lo = _JOINT_LO - offsets
+        joint_hi = _JOINT_HI - offsets
+        bounds = tuple(zip(joint_lo, joint_hi))
+
+    q_ref = np.clip(np.asarray(q0, float), joint_lo, joint_hi)
 
     def pos_cost(q):
         err = fk_pos(q) - target
@@ -185,11 +193,11 @@ def ik(target, q0, lim=None, debug=True):
         pos_cost,
         q_ref,
         method="SLSQP",
-        bounds=_BOUNDS,
+        bounds=bounds,
         options={"maxiter": 250, "ftol": 1e-12, "disp": False},
     )
     q_pos = np.clip(pos_res.x if pos_res.x is not None else q_ref,
-                    _JOINT_LO, _JOINT_HI)
+                    joint_lo, joint_hi)
     pos_err = float(np.linalg.norm(fk_pos(q_pos) - target))
 
     # If xyz is unreachable inside the real limits, do not trade position for
@@ -211,13 +219,13 @@ def ik(target, q0, lim=None, debug=True):
         orient_cost,
         q_pos,
         method="SLSQP",
-        bounds=_BOUNDS,
+        bounds=bounds,
         constraints=constraints,
         options={"maxiter": 250, "ftol": 1e-12, "disp": False},
     )
 
     q = np.clip(orient_res.x if orient_res.x is not None else q_pos,
-                _JOINT_LO, _JOINT_HI)
+                joint_lo, joint_hi)
     if np.linalg.norm(fk_pos(q) - target) > max(_POS_TOL, pos_err * 2.0):
         q = q_pos
 
