@@ -130,6 +130,16 @@ def load_trajectory(path=TRAJ_FILE):
     return points, data
 
 
+def apply_backlash_compensation(points, s_deg, e_deg):
+    """对肩/肘做单向空程试补偿。s_deg/e_deg 可正可负，由实测决定符号。"""
+    if s_deg == 0.0 and e_deg == 0.0:
+        return
+    for p in points:
+        p["s"] += s_deg
+        p["e"] += e_deg
+    print(f"[backlash] 已补偿肩 s={s_deg:+.2f}°，肘 e={e_deg:+.2f}°", flush=True)
+
+
 def check_limits(points):
     """打印各关节角度范围 vs 真机限位，返回是否有超限。"""
     deg = np.array([[p[k] for k in JOINT_ORDER] for p in points])
@@ -166,6 +176,10 @@ def main():
     ap.add_argument("--dt", type=float, default=DEFAULT_DT, help="相邻点时间间隔(s)，默认取自 robot_config")
     ap.add_argument("--spd", type=int, default=DEFAULT_SPD, help="关节角速度(°/s)，默认取自 robot_config")
     ap.add_argument("--acc", type=int, default=DEFAULT_ACC, help="关节角加速度，默认取自 robot_config")
+    ap.add_argument("--backlash-s-deg", type=float, default=0.0,
+                    help="肩关节 s 空程补偿角度(°)，可正可负；默认 0 不补偿")
+    ap.add_argument("--backlash-e-deg", type=float, default=0.0,
+                    help="肘关节 e 空程补偿角度(°)，可正可负；默认 0 不补偿")
     args = ap.parse_args()
 
     if args.from_file is not None:
@@ -177,7 +191,7 @@ def main():
               f"笔轴偏离竖直: 最大={tilt.max():.2f}° 均值={tilt.mean():.2f}°", flush=True)
         deg = np.degrees(qtraj)             # (N,5)，列依次为 b,s,e,w,h
         points = [{k: float(row[i]) for i, k in enumerate(JOINT_ORDER)} for row in deg]
-        save_trajectory(points, {
+        meta = {
             "source_image": args.img,
             "paper_cx": args.paper_cx, "paper_cy": args.paper_cy,
             "n_waypoints": args.n_waypoints,
@@ -185,7 +199,14 @@ def main():
             "ik_residual_mm_max": float(res.max() * 1000),
             "tilt_deg_max": float(tilt.max()),
             "n_points": len(points),
-        })
+            "backlash_s_deg": float(args.backlash_s_deg),
+            "backlash_e_deg": float(args.backlash_e_deg),
+        }
+
+    apply_backlash_compensation(points, args.backlash_s_deg, args.backlash_e_deg)
+
+    if args.from_file is None:
+        save_trajectory(points, meta)
 
     if args.max_points is not None:
         points = points[:args.max_points]
