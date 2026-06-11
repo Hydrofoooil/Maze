@@ -12,6 +12,7 @@
     python robot_server_openloop.py
 """
 
+import os
 import socket
 import json
 import time
@@ -22,11 +23,11 @@ from typing import Dict, Any, List, Optional
 import serial
 
 # ---- 对上位机的 TCP 服务 ----
-SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 9001
+SERVER_HOST = os.environ.get("ROBOT_SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("ROBOT_SERVER_PORT", "9001"))
 
 # ---- 机械臂串口 ----
-SERIAL_PORT = "COM4"
+SERIAL_PORT = os.environ.get("ROBOT_SERIAL_PORT", "COM4" if os.name == "nt" else "/dev/ttyUSB0")
 BAUD = 115200
 
 LIMITS = {
