@@ -130,14 +130,61 @@ def load_trajectory(path=TRAJ_FILE):
     return points, data
 
 
+def _first_motion_dir(values):
+    for d in np.diff(values):
+        if abs(d) > 1e-6:
+            return 1 if d > 0 else -1
+    return 0
+
+
+def _apply_directional_backlash(points, joint, bias_deg):
+    if bias_deg == 0.0 or len(points) == 0:
+        return 0
+    values = np.array([p[joint] for p in points], dtype=float)
+    trigger_dir = 1 if bias_deg > 0 else -1
+    last_dir = _first_motion_dir(values)
+    applied = 0
+
+    for i, p in enumerate(points):
+        if i > 0:
+            delta = values[i] - values[i - 1]
+            if abs(delta) > 1e-6:
+                last_dir = 1 if delta > 0 else -1
+        if last_dir == trigger_dir:
+            p[joint] += bias_deg
+            applied += 1
+    return applied
+
+
+def _apply_shoulder_backlash(points, bias_deg):
+    if bias_deg == 0.0 or len(points) == 0:
+        return 0
+    values = np.array([p["s"] for p in points], dtype=float)
+    abs_values = np.abs(values)
+    trigger_dir = 1 if bias_deg > 0 else -1
+    bias_mag = abs(bias_deg)
+    last_dir = _first_motion_dir(abs_values)
+    applied = 0
+
+    for i, p in enumerate(points):
+        if i > 0:
+            delta = abs_values[i] - abs_values[i - 1]
+            if abs(delta) > 1e-6:
+                last_dir = 1 if delta > 0 else -1
+        if last_dir == trigger_dir:
+            side = 1 if values[i] >= 0 else -1
+            p["s"] += side * bias_mag * trigger_dir
+            applied += 1
+    return applied
+
+
 def apply_backlash_compensation(points, s_deg, e_deg):
-    """对肩/肘做单向空程试补偿。s_deg/e_deg 可正可负，由实测决定符号。"""
-    if s_deg == 0.0 and e_deg == 0.0:
-        return
-    for p in points:
-        p["s"] += s_deg
-        p["e"] += e_deg
-    print(f"[backlash] 已补偿肩 s={s_deg:+.2f}°，肘 e={e_deg:+.2f}°", flush=True)
+    """肩按 |s| 方向补偿，肘按原始关节方向补偿。"""
+    n_s = _apply_shoulder_backlash(points, s_deg)
+    n_e = _apply_directional_backlash(points, "e", e_deg)
+    if n_s or n_e:
+        print(f"[backlash] 按方向补偿: 肩 s={s_deg:+.2f}°(|s|触发 {n_s}/{len(points)} 点), "
+              f"肘 e={e_deg:+.2f}°({n_e}/{len(points)} 点)", flush=True)
 
 
 def check_limits(points):
@@ -177,9 +224,9 @@ def main():
     ap.add_argument("--spd", type=int, default=DEFAULT_SPD, help="关节角速度(°/s)，默认取自 robot_config")
     ap.add_argument("--acc", type=int, default=DEFAULT_ACC, help="关节角加速度，默认取自 robot_config")
     ap.add_argument("--backlash-s-deg", type=float, default=0.0,
-                    help="肩关节 s 空程补偿角度(°)，可正可负；默认 0 不补偿")
+                    help="肩 s 空程补偿(°)：正值在 |s| 增大时远离 0 补，负值在 |s| 减小时靠近 0 补")
     ap.add_argument("--backlash-e-deg", type=float, default=0.0,
-                    help="肘关节 e 空程补偿角度(°)，可正可负；默认 0 不补偿")
+                    help="肘关节 e 空程补偿角度(°)，只在 e 同符号方向运动时触发；默认 0 不补偿")
     args = ap.parse_args()
 
     if args.from_file is not None:
@@ -199,6 +246,7 @@ def main():
             "ik_residual_mm_max": float(res.max() * 1000),
             "tilt_deg_max": float(tilt.max()),
             "n_points": len(points),
+            "backlash_mode": "shoulder_abs_direction_elbow_joint_delta",
             "backlash_s_deg": float(args.backlash_s_deg),
             "backlash_e_deg": float(args.backlash_e_deg),
         }

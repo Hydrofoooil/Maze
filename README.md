@@ -251,7 +251,9 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 - **`move` 字段不可靠**：机械臂停止后仍可能 `=1`，不能拿来判到位。
 - **`e` 在 0° 附近约 3.5° 稳态误差**（重力下垂）。
 - **肩/肘存在机械空程**：肩关节输出轴实测约 3°，肘关节约 1~2°。`draw_maze_real.py`
-  提供 `--backlash-s-deg` / `--backlash-e-deg` 做单向试补偿，默认 0；补偿正负号需按实机落点验证。
+  提供 `--backlash-s-deg` / `--backlash-e-deg` 做按方向触发的单向试补偿，默认 0。
+  肩 `s` 跨 0° 时按 `|s|` 判断方向：正值只在 `|s|` 增大时补，负值只在 `|s|` 减小时补，
+  补偿符号会随 `s` 正负自动翻转；肘 `e` 仍按原始关节角正/负方向触发。
 - 因此 robot_server 用「**角度收敛**（关节不再变化=已停止）」判到位，而非比对目标角或看 `move`。
 - **串口物理要稳**：机械臂猛动时曾拉扯 USB 线 / 供电波动导致串口瞬断（**数据线没插好时
   `T=105` 返回全 `\x00`**）；接线插牢、12V 供电稳。`robot_server` 已对 `SerialException` 容错。
@@ -292,7 +294,9 @@ python arm_real_client/draw_maze_real.py --send --from-file --max-points 5
 python arm_real_client/draw_maze_real.py --send --from-file
 ```
 
-肩/肘空程补偿先从少量点试探，方向不对就把正负号反过来：
+肩/肘空程补偿按运动方向触发。肩 `s` 特殊处理跨 0°：`--backlash-s-deg 3` 表示只有
+`|s|` 增大的点向远离 0 的方向补，`--backlash-s-deg -3` 表示只有 `|s|` 减小的点向靠近 0
+的方向补；肘 `e` 则仍按原始关节角方向触发。先从少量点试探，方向不对就把正负号反过来：
 
 ```bash
 # 只发前 5 个点，试肩 +3°、肘 +2°
@@ -308,8 +312,9 @@ python arm_real_client/draw_maze_real.py --send --from-file \
   --backlash-s-deg 3 --backlash-e-deg 2
 ```
 
-补偿参数只改肩 `s` 和肘 `e` 的下发角度。现场规划模式会把补偿后的轨迹写入
-`trajectory/trajectory.json`；`--from-file` 模式只对本次下发临时补偿，不回写原文件。
+补偿参数只改肩 `s` 和肘 `e` 的下发角度。肩按 `|s|` 的增减方向触发，肘按原始关节角增减方向触发。
+现场规划模式会把补偿后的轨迹写入 `trajectory/trajectory.json`；`--from-file` 模式只对本次下发
+临时补偿，不回写原文件。
 
 常用参数：`--img` 换迷宫图、`--paper-cx` 纸张摆放距离(m)、`--dt` 点间隔、`--spd` 速度、
 `--n-waypoints` 轨迹点数、`--backlash-s-deg` 肩关节空程补偿、`--backlash-e-deg`
