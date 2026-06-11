@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.join(REPO, "arm_sim"))
 from arm_kinematics import ik   # noqa: E402  纯 numpy，Isaac 启动前先算
 
 PEN_Z = 0.003                   # 纸面高度（笔尖目标 z），与 draw_maze 一致
-# 真机限位（度）。w 放宽到 ±95 以容忍「画竖直笔需 ~-93°、被 clamp 到 -90」的情况。
-LIM = [(-180, 180), (-90, 90), (-90, 90), (-95, 95), (-180, 180)]
+# 真机限位（度）。h 是改装后的笔旋转关节，但实际可动范围仍按 ±45。
+LIM = [(-180, 180), (-90, 90), (-90, 90), (-95, 95), (-45, 45)]
 
 
 def reachable(r, seed):

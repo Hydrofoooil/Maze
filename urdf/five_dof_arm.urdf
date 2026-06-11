@@ -127,7 +127,7 @@
     <child link="link_5"/>
     <origin xyz="0.0121 -0.02478 0.01835" rpy="0 -1.57079632679 1.57079632679"/>
     <axis xyz="0 0 1"/>
-    <limit lower="-3.14159265359" upper="3.14159265359" effort="10" velocity="2"/>
+    <limit lower="-0.785398163397" upper="0.785398163397" effort="10" velocity="2"/>
   </joint>
 
   <!-- ^5T_pen_tip: xyz = [34.31, -80.12, -26.72] mm, R = Rx(-pi/2) -->
