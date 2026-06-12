@@ -186,11 +186,13 @@ def apply_backlash_compensation(points, s_deg, e_deg):
               f"肘 e={e_deg:+.2f}°({n_e}/{len(points)} 点)", flush=True)
 
 
-def prepend_w_preturn_point(points):
-    """插入第 0 点：先到路径起点的 b/s/e/w，但保持 h=0，避免 w/h 同时进入绘图姿态。"""
-    pre = dict(points[0])
-    pre["h"] = 0.0
-    return [pre] + points
+def prepend_prep_start_points(points):
+    """插入两个预备点：先让 w/h 到绘图姿态，再进入真实路径。"""
+    prep_points = [
+        {"b": 0.0, "s": 0.0, "e": 0.0, "w": -90.0, "h": 0.0},
+        {"b": 0.0, "s": 0.0, "e": 0.0, "w": -90.0, "h": -45.0},
+    ]
+    return prep_points + points
 
 
 def check_limits(points):
@@ -266,8 +268,8 @@ def main():
         points = points[:args.max_points]
         print(f"[traj] 只取前 {len(points)} 个点（--max-points）", flush=True)
 
-    send_points = prepend_w_preturn_point(points)
-    print(f"[traj] 插入第0点避让: b/s/e/w=路径首点, h=0.00°；"
+    send_points = prepend_prep_start_points(points)
+    print(f"[traj] 插入2个预备点: (0,0,0,-90,0) -> (0,0,0,-90,-45)；"
           f"真实路径 {len(points)} 点 -> 实际下发 {len(send_points)} 点", flush=True)
 
     over = check_limits(send_points)
