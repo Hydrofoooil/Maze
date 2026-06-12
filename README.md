@@ -277,6 +277,11 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 → 弧长重采样 → 纸面物理坐标 → arm_kinematics 的 5-DOF IK 解关节角 → 映射到 b/s/e/w/h → 下发。
 关节对应：URDF joint_1..5 = b/s/e/w/h，第 5 关节是改装后的笔旋转件，实际限位 ±45（见 4.2）。
 
+真机下发前，脚本会在内存中插入一个**避让第 0 点**：`b/s/e/w` 取真实路径首点，`h=0°`。
+这样先让手腕 `w` 到路径起点姿态，笔旋转件 `h` 暂不进入绘图角，避免 W/H 同时转动时笔和摄像头干涉。
+这个第 0 点只参与本次下发和限位检查，**不会写入** `trajectory/trajectory.json`；因此
+`--max-points 5` 表示真实路径前 5 个点，实际会下发 6 个点（第 0 点 + 5 个真实路径点）。
+
 每次规划产物（都在 `maze_planner/outputs/` 下，覆盖上一次）：
 
 - `trajectory/trajectory.json` —— 关节轨迹（b/s/e/w/h 度）+ 元数据，可被 `--from-file` 直接读

@@ -186,6 +186,13 @@ def apply_backlash_compensation(points, s_deg, e_deg):
               f"肘 e={e_deg:+.2f}°({n_e}/{len(points)} 点)", flush=True)
 
 
+def prepend_w_preturn_point(points):
+    """插入第 0 点：先到路径起点的 b/s/e/w，但保持 h=0，避免 w/h 同时进入绘图姿态。"""
+    pre = dict(points[0])
+    pre["h"] = 0.0
+    return [pre] + points
+
+
 def check_limits(points):
     """打印各关节角度范围 vs 真机限位，返回是否有超限。"""
     deg = np.array([[p[k] for k in JOINT_ORDER] for p in points])
@@ -259,11 +266,15 @@ def main():
         points = points[:args.max_points]
         print(f"[traj] 只取前 {len(points)} 个点（--max-points）", flush=True)
 
-    over = check_limits(points)
+    send_points = prepend_w_preturn_point(points)
+    print(f"[traj] 插入第0点避让: b/s/e/w=路径首点, h=0.00°；"
+          f"真实路径 {len(points)} 点 -> 实际下发 {len(send_points)} 点", flush=True)
+
+    over = check_limits(send_points)
 
     if not args.send:
-        print(f"[dry-run] 仅规划+校验，未下发。预计 {len(points)} 点 x dt={args.dt}s "
-              f"≈ {len(points) * args.dt:.0f}s。确认无误后加 --send。", flush=True)
+        print(f"[dry-run] 仅规划+校验，未下发。预计 {len(send_points)} 点 x dt={args.dt}s "
+              f"≈ {len(send_points) * args.dt:.1f}s。确认无误后加 --send。", flush=True)
         return
 
     if over:
@@ -272,7 +283,7 @@ def main():
     print(f"[send] 连接 {args.host}:{args.port} ...", flush=True)
     robot = RobotClient(host=args.host, port=args.port)
     print("[send] ping:", robot.ping(), flush=True)
-    resp = robot.trajectory(points, dt=args.dt, traj_id="maze",
+    resp = robot.trajectory(send_points, dt=args.dt, traj_id="maze",
                             spd=args.spd, acc=args.acc)
     print("[send] trajectory:", resp, flush=True)
     print("[send] status:", robot.status(), flush=True)
