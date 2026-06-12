@@ -234,8 +234,9 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 - **joint**：单点控制 `{"type":"joint","b":30,...,"spd":10,"acc":10}`，server 限幅后转成 `T=122`
   串口指令。轨迹执行期间会拒绝单点（需先 stop）。
 - **trajectory**：异步下发整条轨迹（`points` + `dt` + `spd/acc`）。返回 `accepted` 只表示**已接收，
-  不代表执行完成**；server 用独立线程**逐点闭环**执行——发一个点后轮询 `T=105` 状态、检测「角度收敛」
-  （机械臂停止运动）才发下一个；探测不到状态返回时回退按 `dt` 定时。
+  不代表执行完成**；server 用独立线程**逐点闭环**执行——发一个点后轮询 `T=105` 状态，要求
+  `b/s/e/w` 接近目标且角度收敛后才发下一个；探测不到状态返回时回退按 `dt` 定时。
+  闭环模式下单点超时会停止整条轨迹，避免未到位姿态继续下发。
 - **status**：查本地执行状态 `server_state`，字段 `status`（idle/running/done/stopped/error）、
   `traj_id`、`current_index`、`total_points` 等。
 - **state**：向机械臂查 `T=105`（当前主控板未稳定返回，系统不依赖它，以本地 `server_state` 为准）。
@@ -255,7 +256,8 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
   提供 `--backlash-s-deg` / `--backlash-e-deg` 做按方向触发的单向试补偿，默认 0。
   肩 `s` 跨 0° 时按 `|s|` 判断方向：正值只在 `|s|` 增大时补，负值只在 `|s|` 减小时补，
   补偿符号会随 `s` 正负自动翻转；肘 `e` 仍按原始关节角正/负方向触发。
-- 因此 robot_server 用「**角度收敛**（关节不再变化=已停止）」判到位，而非比对目标角或看 `move`。
+- 因此 robot_server 用「**目标误差 + 角度收敛**」判到位：`b/e/w` 按正常差值比对，`s` 因返回符号反
+  按反号误差比对，`h` 不纳入到位判据；不再只看 `move`。
 - **串口物理要稳**：机械臂猛动时曾拉扯 USB 线 / 供电波动导致串口瞬断（**数据线没插好时
   `T=105` 返回全 `\x00`**）；接线插牢、12V 供电稳。`robot_server` 已对 `SerialException` 容错。
 
@@ -277,10 +279,11 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 → 弧长重采样 → 纸面物理坐标 → arm_kinematics 的 5-DOF IK 解关节角 → 映射到 b/s/e/w/h → 下发。
 关节对应：URDF joint_1..5 = b/s/e/w/h，第 5 关节是改装后的笔旋转件，实际限位 ±45（见 4.2）。
 
-真机下发前，脚本会在内存中插入一个**避让第 0 点**：`b/s/e/w` 取真实路径首点，`h=0°`。
-这样先让手腕 `w` 到路径起点姿态，笔旋转件 `h` 暂不进入绘图角，避免 W/H 同时转动时笔和摄像头干涉。
-这个第 0 点只参与本次下发和限位检查，**不会写入** `trajectory/trajectory.json`；因此
-`--max-points 5` 表示真实路径前 5 个点，实际会下发 6 个点（第 0 点 + 5 个真实路径点）。
+真机下发前，脚本会在内存中插入两个**预备点**：`(b,s,e,w,h)=(0,0,0,-90,0)`，
+然后 `(0,0,0,-90,-45)`。这样先让手腕 `w` 和笔旋转件 `h` 进入绘图姿态，再进入真实路径，
+避免 W/H 同时转动时笔和摄像头干涉。这两个预备点只参与本次下发和限位检查，**不会写入**
+`trajectory/trajectory.json`；因此 `--max-points 5` 表示真实路径前 5 个点，实际会下发 7 个点
+（2 个预备点 + 5 个真实路径点）。
 
 每次规划产物（都在 `maze_planner/outputs/` 下，覆盖上一次）：
 

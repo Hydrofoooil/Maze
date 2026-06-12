@@ -46,16 +46,16 @@ LIMITS = {
 DEFAULT_SPD = 10
 DEFAULT_ACC = 10
 
-# 到位轮询参数（闭环：发一个点 -> 轮询 T=105 直到角度收敛=停止 -> 再发下一个）
-ANGLE_TOL_DEG = 2.0      # 仅诊断显示用（绝对角度误差）；到位判据用下面的「角度收敛」
+# 到位轮询参数（闭环：发一个点 -> 轮询 T=105 直到接近目标且角度收敛 -> 再发下一个）
+ANGLE_TOL_DEG = 5.0      # b/s/e/w 目标误差阈值；s 状态返回符号反，误差计算时单独反号
 POLL_INTERVAL = 0.05     # 两次状态查询的间隔(s)
-POINT_TIMEOUT = 12.0     # 单点最大等待(s)，超时则放弃等待、继续下一点
-                         # 注意 spd 单位 °/s：spd=10 走 90° 要 9s，大角度移动需放宽此值或调大 spd
+POINT_TIMEOUT = 30.0     # 单点最大等待(s)，超时停止轨迹，避免未到位就继续下发
+                         # 注意 spd 单位 °/s：spd=5 走 90° 要 18s，大角度移动需放宽此值或调大 spd
 MIN_SETTLE = 0.8         # 目标≈当前(几乎不动)时，至少等这么久再判定到位
 STABLE_DELTA = 0.6       # 相邻两次状态各关节变化都 < 此值，视为"这一刻没在动"
 STABLE_NEEDED = 4        # 连续这么多次"没在动"判定为已停止到位（× POLL_INTERVAL ≈ 确认时长）
 JOINT_KEYS = ("b", "s", "e", "w", "h")
-CHECK_KEYS = ("b", "s", "e", "w")   # 到位判据只看这 4 个；h(笔旋转件)返回字段 t 零位存疑、画图非关键
+CHECK_KEYS = ("b", "s", "e", "w", "h")   
 _RAD2DEG = 180.0 / math.pi
 
 state_lock = threading.Lock()
@@ -127,8 +127,8 @@ def _extract_state(buf: bytes) -> Optional[Dict[str, Any]]:
 def _state_to_deg(st: Dict[str, Any]) -> Dict[str, float]:
     """把 T=1051 状态返回（弧度）换算成 b/s/e/w/h（度）。
     注意：返回里第 5 关节字段名是 't'（说明书 6.7），对应控制指令里的 h。
-    另：s(肩,步进电机)返回符号与指令相反，但实际动作方向正确——这里不修正符号，
-    到位判据用「角度收敛(是否还在变)」，不受符号影响。"""
+    另：s(肩,步进电机)返回符号与指令相反，但实际动作方向正确——这里不修正状态值，
+    只在目标误差判据里按 -target 比对。"""
     return {
         "b": float(st.get("b", 0.0)) * _RAD2DEG,
         "s": float(st.get("s", 0.0)) * _RAD2DEG,
@@ -168,9 +168,8 @@ def query_state(timeout: float = 0.5) -> Optional[Dict[str, Any]]:
 def send_point_and_wait(cmd: Dict[str, Any], dt_after: float = 0.0) -> bool:
     """发一个控制点，再轮询 T=105 直到到位或超时。
 
-    到位判据：检测「角度收敛」——b/s/e/w 连续若干次几乎不再变化即认定机械臂已停止。
-    这比 move 字段(实测停止后仍可能=1)和绝对角度比对(返回 s 符号与指令相反)都可靠，
-    只看「是否还在动」，不受返回符号/零位/稳态误差影响。h(笔旋转件)不纳入。
+    到位判据：b/s/e/w 已接近目标，且 b/s/e/w 连续若干次几乎不再变化。
+    s 返回符号与指令相反，按 cur_s + target_s 计算误差；h(笔旋转件)返回字段零位存疑，不纳入。
     返回 True=到位，False=超时或被 stop 打断。"""
     target = {j: float(cmd[j]) for j in CHECK_KEYS}
     send_serial(cmd)
@@ -181,6 +180,7 @@ def send_point_and_wait(cmd: Dict[str, Any], dt_after: float = 0.0) -> bool:
     stable = 0
     n_state = 0
     last_diff = None
+    target_err = None
     last_move = None
     while time.time() - start < POINT_TIMEOUT:
         if stop_event.is_set():
@@ -195,7 +195,9 @@ def send_point_and_wait(cmd: Dict[str, Any], dt_after: float = 0.0) -> bool:
         last_move = st.get("move")
         cur = _state_to_deg(st)
         last_diff = {j: cur[j] - target[j] for j in CHECK_KEYS}
-        err = max(abs(v) for v in last_diff.values())
+        target_diff = dict(last_diff)
+        target_diff["s"] = cur["s"] + target["s"]   # s 状态符号与指令相反
+        target_err = max(abs(v) for v in target_diff.values())
         # 「角度收敛」判到位：相邻两次各关节变化都很小、连续若干次 => 已停止。
         if prev is not None:
             delta = max(abs(cur[j] - prev[j]) for j in CHECK_KEYS)
@@ -205,13 +207,14 @@ def send_point_and_wait(cmd: Dict[str, Any], dt_after: float = 0.0) -> bool:
             else:
                 stable += 1
         prev = cur
-        if stable >= STABLE_NEEDED and (moved or elapsed >= MIN_SETTLE):
+        target_close = target_err <= ANGLE_TOL_DEG
+        if target_close and stable >= STABLE_NEEDED and (moved or elapsed >= MIN_SETTLE):
             if dt_after > 0:
                 stop_event.wait(dt_after)
             return not stop_event.is_set()
         if elapsed >= next_log:
             print(f"[POLL] t={elapsed:.1f}s move={last_move} stable={stable} "
-                  f"err={err:.1f}deg diff={ {j: round(last_diff[j], 1) for j in CHECK_KEYS} }",
+                  f"target_err={target_err:.1f}deg diff={ {j: round(target_diff[j], 1) for j in CHECK_KEYS} }",
                   flush=True)
             next_log = elapsed + 1.0
         if stop_event.wait(POLL_INTERVAL):
@@ -220,8 +223,9 @@ def send_point_and_wait(cmd: Dict[str, Any], dt_after: float = 0.0) -> bool:
     if n_state == 0:
         print(f"[POLL] 超时：{POINT_TIMEOUT}s 内未读到任何 T=1051 状态返回", flush=True)
     else:
-        print(f"[POLL] 超时：收到 {n_state} 次状态但角度始终未收敛(可能一直抖动)，"
-              f"最后误差 max={max(abs(v) for v in last_diff.values()):.1f}deg", flush=True)
+        print(f"[POLL] 超时：收到 {n_state} 次状态但未满足目标误差+角度收敛，"
+              f"最后 target_err={target_err:.1f}deg "
+              f"diff={ {j: round(target_diff[j], 1) for j in CHECK_KEYS} }", flush=True)
     return False
 
 
@@ -275,7 +279,10 @@ def execute_trajectory_worker(traj: Dict[str, Any]):
                 if reached:
                     print(f"[REACHED] point {i + 1}/{len(points)}", flush=True)
                 else:
-                    print(f"[WARN] point {i + 1} 未在 {POINT_TIMEOUT}s 内到位，继续下一点", flush=True)
+                    msg = f"point {i + 1} 未在 {POINT_TIMEOUT}s 内到位，停止轨迹"
+                    print(f"[ERR] {msg}", flush=True)
+                    set_state(status="error", current_index=i + 1, last_error=msg)
+                    return
             else:
                 send_serial(cmd)
                 set_state(current_index=i + 1)
