@@ -43,8 +43,8 @@ _JOINTS = [
     (_T(0.0121, 0.02478, 0.01835),           _rpy(0, -_PI/2, -_PI/2),   -1),  # j5
 ]
 _PEN_T = np.array([0.03431, 0.08012, -0.02672])    # URDF pen_tip 偏移 (y 已反射)
-_NIB = np.array([0.04473864, -0.07941421, -0.0254])  # 笔尖(写字端), y 已反射
-_TAIL = np.array([0.02646136, 0.03921421, -0.0290])  # 笔尾, y 已反射
+_NIB = np.array([0.04473864, -0.07941421, 0.030])  # 笔尖(写字端): z 同步 URDF marker=30mm
+_TAIL = np.array([0.02646136, 0.03921421, 0.030])  # 笔尾: z 同步 URDF marker=30mm
 _JOINT_LO = np.radians([-180.0, -90.0, -90.0, -90.0, -45.0])
 _JOINT_HI = np.radians([ 180.0,  90.0,  90.0,  90.0,  45.0])
 _BOUNDS = tuple(zip(_JOINT_LO, _JOINT_HI))

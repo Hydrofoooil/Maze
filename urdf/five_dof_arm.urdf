@@ -22,6 +22,12 @@
   <material name="blue">
     <color rgba="0.12 0.36 0.80 1.0"/>
   </material>
+  <material name="nib_red">
+    <color rgba="0.90 0.10 0.10 1.0"/>
+  </material>
+  <material name="tail_green">
+    <color rgba="0.10 0.80 0.20 1.0"/>
+  </material>
 
   <link name="base_link">
     <visual>
@@ -84,6 +90,33 @@
   </link>
 
   <link name="pen_tip"/>
+
+  <!-- 笔尖/笔尾标记: 坐标=arm_kinematics 反射后的 _NIB/_TAIL(link_5 局部系), 便于仿真核对 -->
+  <link name="nib_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><sphere radius="0.006"/></geometry>
+      <material name="nib_red"/>
+    </visual>
+  </link>
+  <link name="tail_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><sphere radius="0.006"/></geometry>
+      <material name="tail_green"/>
+    </visual>
+  </link>
+
+  <joint name="nib_marker_fixed" type="fixed">
+    <parent link="link_5"/>
+    <child link="nib_marker"/>
+    <origin xyz="0.04473864 -0.07941421 0.030" rpy="0 0 0"/>
+  </joint>
+  <joint name="tail_marker_fixed" type="fixed">
+    <parent link="link_5"/>
+    <child link="tail_marker"/>
+    <origin xyz="0.02646136 0.03921421 0.030" rpy="0 0 0"/>
+  </joint>
 
   <!-- 真机=原URDF建模关于XZ平面(Y->-Y)的镜像; 全链已做Y反射使其忠实描述真机 -->
   <!-- ^0T_1: xyz=[0,0,49.3]mm, axis 反射后翻号 -->
