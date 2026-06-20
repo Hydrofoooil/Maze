@@ -110,12 +110,12 @@
   <joint name="nib_marker_fixed" type="fixed">
     <parent link="link_5"/>
     <child link="nib_marker"/>
-    <origin xyz="0.04473864 -0.07941421 0.030" rpy="0 0 0"/>
+    <origin xyz="0.0508886 -0.07813403 0.030" rpy="0 0 0"/>
   </joint>
   <joint name="tail_marker_fixed" type="fixed">
     <parent link="link_5"/>
     <child link="tail_marker"/>
-    <origin xyz="0.02646136 0.03921421 0.030" rpy="0 0 0"/>
+    <origin xyz="0.0203114 0.03793403 0.030" rpy="0 0 0"/>
   </joint>
 
   <!-- 真机=原URDF建模关于XZ平面(Y->-Y)的镜像; 全链已做Y反射使其忠实描述真机 -->
