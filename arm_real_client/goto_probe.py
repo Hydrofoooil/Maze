@@ -32,6 +32,7 @@ draw_maze_real 的 LIMITS_DEG / check_limits / prepend_prep_start_points 约定�
 
 import os
 import sys
+import time
 import argparse
 
 import numpy as np
@@ -105,9 +106,34 @@ def solve_and_report(target, q_seed):
     return q, point, ok
 
 
+def send_traj_and_wait(robot, points, spd, acc, dt, traj_id="probe"):
+    """发一条 trajectory 并阻塞等它执行完。
+    复用 draw_maze_real 的发送方式：server 端 send_point_and_wait 会逐点轮询到位，
+    保证笔尖先竖直到达上方点、停稳，再垂直落下，绝不贴纸横拖。
+    返回 True=正常结束(done)，False=出错/超时/被 stop。"""
+    try:
+        robot.trajectory(points, dt=dt, traj_id=traj_id, spd=spd, acc=acc)
+    except OSError as ex:
+        print(f"  [错误] 发送失败：{ex}", flush=True)
+        return False
+    time.sleep(0.3)   # 给 server 工作线程起步、把 status 置为 running 的时间
+    while True:
+        try:
+            st = robot.status()["server_state"]["status"]
+        except OSError as ex:
+            print(f"  [错误] 轮询 status 失败：{ex}", flush=True)
+            return False
+        if st in ("done", "error", "stopped", "idle"):
+            if st != "done":
+                print(f"  [警告] 轨迹未正常结束：status={st}", flush=True)
+            return st == "done"
+        time.sleep(0.1)
+
+
 def goto_target(robot, target, q_seed, spd, acc, dt):
     """抬笔→平移→落下，把笔尖移动到 target。
-    先在目标正上方 (z+LIFT) 求解并移动，再垂直落到目标 z。
+    把"目标上方点 + 目标落点"作为一条 2 点 trajectory 下发，由 server 逐点轮询到位，
+    避免裸 joint 背靠背发送时第二条覆盖第一条、机械臂不到上方就斜拖到落点。
     返回 (q_at_target, point_at_target, ok) 供下一点作种子；发送失败返回 None。"""
     above = np.array([target[0], target[1], target[2] + LIFT])
 
@@ -125,28 +151,21 @@ def goto_target(robot, target, q_seed, spd, acc, dt):
             print("  已跳过该点（未发送）。", flush=True)
             return None
 
-    # 3) 先发上方点，再发落点（开环按 dt 间隔，单点用 joint 即可）
-    print(f"[send] 移动到目标上方 -> 垂直落下 (spd={spd}, acc={acc})", flush=True)
-    try:
-        robot.joint(**pt_above, spd=spd, acc=acc)
-        robot.joint(**pt_at, spd=spd, acc=acc)
-    except OSError as ex:
-        print(f"  [错误] 发送失败：{ex}", flush=True)
+    # 3) 一条 2 点轨迹：先到上方点停稳，再垂直落到落点
+    print(f"[send] 轨迹下发：上方点 -> 落点 (spd={spd}, acc={acc}, dt={dt})", flush=True)
+    if not send_traj_and_wait(robot, [pt_above, pt_at], spd, acc, dt):
         return None
     print("  已落到目标点。比对实际落点后回车继续。", flush=True)
     return q_at, pt_at, ok_at
 
 
-def lift_pen(robot, q_seed, spd, acc):
+def lift_pen(robot, q_seed, spd, acc, dt):
     """从当前位置抬笔到安全高度（用最近一次的 x,y，z 抬到 PEN_Z+LIFT）。
-    q_seed 为最近解，用其 FK 取当前 x,y。"""
+    q_seed 为最近解，用其 FK 取当前 x,y。走 trajectory 单点，等到位再返回。"""
     cur = fk_pos(q_seed)
     above = np.array([cur[0], cur[1], PEN_Z + LIFT])
-    q_above, _, _ = ik(above, q_seed)
-    try:
-        robot.joint(**q_to_point(q_above), spd=spd, acc=acc)
-    except OSError as ex:
-        print(f"  [错误] 抬笔失败：{ex}", flush=True)
+    q_above, pt_above, _ = solve_and_report(above, q_seed)
+    send_traj_and_wait(robot, [pt_above], spd, acc, dt, traj_id="lift")
 
 
 def parse_coord(line):
@@ -192,11 +211,12 @@ def main():
             return
         # 进入绘图姿态：先让腕/笔旋转关节到位（与 draw_maze_real 预备点一致）
         print("[prep] 进入绘图姿态 (w=-90, h=-45) ...", flush=True)
-        try:
-            robot.joint(b=0, s=0, e=0, w=-90, h=0, spd=args.spd, acc=args.acc)
-            robot.joint(b=0, s=0, e=0, w=-90, h=-45, spd=args.spd, acc=args.acc)
-        except OSError as ex:
-            print(f"[错误] 预备姿态发送失败：{ex}", flush=True)
+        prep = [
+            {"b": 0, "s": 0, "e": 0, "w": -90, "h": 0},
+            {"b": 0, "s": 0, "e": 0, "w": -90, "h": -45},
+        ]
+        if not send_traj_and_wait(robot, prep, args.spd, args.acc, args.dt, traj_id="prep"):
+            print("[错误] 预备姿态未正常到位，退出。", flush=True)
             return
     else:
         print("[dry-run] 只求解+打印，不连硬件。确认无误后加 --send。", flush=True)
@@ -228,14 +248,14 @@ def main():
             if result is not None:
                 q_at, _, _ = result
                 input("  [回车] 看完落点后继续，将抬笔再等下一个点 ...")
-                lift_pen(robot, q_at, args.spd, args.acc)
+                lift_pen(robot, q_at, args.spd, args.acc, args.dt)
                 q_seed = q_at  # 用上一解作下一点种子，保持连续
     except KeyboardInterrupt:
         print("\n中断。", flush=True)
     finally:
         if args.send and robot is not None:
             print("[退出] 抬笔回安全姿态 ...", flush=True)
-            lift_pen(robot, q_seed, args.spd, args.acc)
+            lift_pen(robot, q_seed, args.spd, args.acc, args.dt)
     print("结束。", flush=True)
 
 
