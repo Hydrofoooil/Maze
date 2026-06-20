@@ -33,10 +33,12 @@ MAZE_IMG = os.path.join(REPO, "maze_planner", "samples", "test_0.jpg")
 
 
 def img_to_world(px, py, wimg, himg):
-    """矫正图像素 (px,py) -> 纸面世界坐标 (与纹理 UV 一致)。"""
+    """矫正图像素 (px,py) -> 纸面世界坐标 (与纹理 UV 一致)。
+    Y 用 (0.5-u): 运动学模型已做 Y 反射(忠实真机)，这里相应翻 Y 配平，
+    与 draw_maze_real.py 保持一致。"""
     u, v = px / wimg, py / himg
     return (PAPER_CX + (0.5 - v) * PAPER_SX,
-            PAPER_CY + (u - 0.5) * PAPER_SY, PEN_Z)
+            PAPER_CY + (0.5 - u) * PAPER_SY, PEN_Z)
 
 
 def resample(pts, n):

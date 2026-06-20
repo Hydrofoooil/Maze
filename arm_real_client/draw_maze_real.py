@@ -64,10 +64,12 @@ LIMITS_DEG = {"b": (-180, 180), "s": (-90, 90), "e": (-90, 90),
 
 
 def img_to_world(px, py, wimg, himg, paper_cx, paper_cy):
-    """矫正图像素 (px,py) -> 纸面世界坐标 (与 draw_maze.py 的纹理 UV 一致)。"""
+    """矫正图像素 (px,py) -> 纸面世界坐标 (与 draw_maze.py 的纹理 UV 一致)。
+    Y 用 (0.5-u): 运动学模型已做 Y 反射(忠实于真机左手系)，这里相应翻 Y 配平，
+    使整条 图像->世界->真机 链端到端不镜像。两次 Y 反射抵消。"""
     u, v = px / wimg, py / himg
     return (paper_cx + (0.5 - v) * PAPER_SX,
-            paper_cy + (u - 0.5) * PAPER_SY, PEN_Z)
+            paper_cy + (0.5 - u) * PAPER_SY, PEN_Z)
 
 
 def resample(pts, n):
