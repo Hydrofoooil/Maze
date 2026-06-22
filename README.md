@@ -35,11 +35,14 @@ urdf/                    机械臂模型
   five_dof_arm.urdf      5 个旋转关节，参数与 arm_kinematics 对应
   meshes/                各连杆 STL
 arm_real_client/         实机控制 - 上位机（本机）
-  robot_config.py        下位机 IP / 端口集中配置（改地址只动这里）
+  robot_config.py        下位机 IP / 端口 + 运动参数(spd/acc/dt)集中配置（改地址只动这里）
   robot_client.py        RobotClient 封装（ping/joint/trajectory/status/stop）
-  test_client.py         发送轨迹示例
-  draw_maze_real.py      迷宫→IK→关节轨迹→实机下发（一键，见 4.7）
+  reset_arm_client.py    发送轨迹的最小示例（w 来回转一下，可作连通/复位自测）
+  plan_maze.py           规划：迷宫照片→重建+A*→IK→关节轨迹 json（手动点选纸角，见 4.7）
+  draw_maze_real.py      执行：读 json→校验限位→实机下发（不做规划，见 4.7）
+  probe_w.py             探测手腕 w 舵机物理行程（见 4.2）
   estop.py               一键软停（见 4.8）
+  teleop.py              键盘遥操：方向键+QEAD 控笔尖在纸面移动（见 4.9）
 arm_real_server/         实机控制 - 下位机（部署到 Windows）
   robot_server.py        Windows 端：限幅 / 逐点闭环到位 / pyserial 直连 COM4
 ```
@@ -196,7 +199,9 @@ b: -180~180   s: -90~90   e: -90~90   w: -90~90   h: -180~180
 
 > 注：原装 `h` 是夹爪（±45）。本机已**拆除夹爪、换成与笔固定的旋转连接件**，所以 `h` 现在是
 > 「笔旋转关节」、限幅放宽到 ±180。画竖直笔的 IK 解需手腕 `w` 约 -93°，超 ±90 的部分被 clamp
-> 到 -90（笔约 3° 恒定倾斜，画线无碍）；若确认手腕舵机物理能转过 ±90，可放宽 `w`。
+> 到 -90（笔固定偏离竖直约 1.73°，很小、画线几乎无影响）；若确认手腕舵机物理能转过 ±90，可放宽 `w`。
+> 实测 `w` 卡在 ±90、转不过去，探测脚本见 `arm_real_client/probe_w.py`（逐步发 w 目标角、读真机
+> 实际角度，判断能否转过 ±90；需先临时放宽下位机 `LIMITS["w"]` 并重启 robot_server）。
 
 ### 4.3 启动顺序（每次实机运行前）
 
@@ -266,32 +271,62 @@ robot_client 提供 `ping / joint / trajectory / status / state / stop`：
 回安全姿态 `safe_home`、更强急停、日志落盘、robot_server 开机自启、画线连续流式（不逐点等到位、
 更流畅）、轨迹合法性检查（最大步长 / 速度 / 点数）。
 
-### 4.7 从迷宫到实机绘制（一键脚本 draw_maze_real.py）
+### 4.7 从迷宫到实机绘制（规划 plan_maze.py + 执行 draw_maze_real.py 两步）
 
-`arm_real_client/draw_maze_real.py` 把整条链路串起来：迷宫照片 → maze_planner 规划路径
-→ 弧长重采样 → 纸面物理坐标 → arm_kinematics 的 5-DOF IK 解关节角 → 映射到 b/s/e/w/h → 下发。
-关节对应：URDF joint_1..5 = b/s/e/w/h，第 5 关节是改装后的笔旋转件（见 4.2）。
-
-每次规划产物（都在 `maze_planner/outputs/` 下，覆盖上一次）：
-
-- `trajectory/trajectory.json` —— 关节轨迹（b/s/e/w/h 度）+ 元数据，可被 `--from-file` 直接读
-- `image/0_input ~ 6_occupancy.png` —— 各步骤中间图
-- `image/planned.png` —— 规划轨迹投影在矫正(裁剪)后迷宫上的结果图
-
-只需 `maze` 环境（不依赖 GPU/Isaac）。默认 dry-run（只规划+校验，不碰硬件）：
+整条链路拆成「规划」「执行」两个脚本：先用 `plan_maze.py` 把迷宫照片解算成关节轨迹 JSON
+（手动点选纸角、不碰硬件），确认无误后再用 `draw_maze_real.py` 读这个 JSON 下发实机。
+两步都只需 `maze` 环境（不依赖 GPU/Isaac）。关节对应：URDF joint_1..5 = b/s/e/w/h，
+第 5 关节是改装后的笔旋转件（见 4.2）。
 
 ```bash
 conda activate maze
-# 规划：存轨迹/中间图/planned 图 + 校验各关节是否在限位内
-python arm_real_client/draw_maze_real.py
-# 首次上真机：从轨迹文件只发前 5 个点试探，确认笔落点/方向无误
-python arm_real_client/draw_maze_real.py --send --from-file --max-points 5
-# 确认后从轨迹文件直接发全程（不重新规划）
-python arm_real_client/draw_maze_real.py --send --from-file
+# ① 规划：手动点选 4 角 → 重建+A* → IK → 生成 trajectory.json（+ 中间图 + planned.png）
+python arm_real_client/plan_maze.py --img 你的迷宫.jpg
+# ② 执行：先发前 5 点试探，确认笔落点/方向无误
+python arm_real_client/draw_maze_real.py --send --max-points 5
+# ② 执行：确认后发全程
+python arm_real_client/draw_maze_real.py --send
 ```
 
-常用参数：`--img` 换迷宫图、`--paper-cx` 纸张摆放距离(m)、`--dt` 点间隔、`--spd` 速度、
-`--n-waypoints` 轨迹点数。⚠️ 真发前确认下位机已按 4.3 启动、纸张就位、笔尖朝下；首次低速、人盯着。
+**① 规划 `plan_maze.py`**：迷宫照片 → maze_planner 重建+A* 路径 → 弧长重采样 → 纸面物理坐标
+→ arm_kinematics 的 5-DOF IK 解关节角 → 映射到 b/s/e/w/h → 写 JSON。不碰硬件。
+选角方式同 maze_planner（默认弹窗手动点选最可靠、需图形界面/X11）：
+
+```bash
+python arm_real_client/plan_maze.py --img 迷宫.jpg                 # 默认弹窗手动点选 4 角
+python arm_real_client/plan_maze.py --img 迷宫.jpg --auto          # 自动检测纸角（无头环境）
+python arm_real_client/plan_maze.py --img 迷宫.jpg \
+       --corners "x1,y1 x2,y2 x3,y3 x4,y4"                         # 直接给原图坐标
+```
+
+参数：`--img` 迷宫图（默认 `samples/test_0.jpg`）、`--paper-cx` 纸面中心距底座前向距离(m，默认
+**0.33**)、`--paper-cy` 横向偏移(默认 0)、`--n-waypoints` 轨迹点数(默认 120)、`--auto`、`--corners`。
+规划产物（都在 `maze_planner/outputs/` 下，覆盖上一次）：
+
+- `trajectory/trajectory.json` —— 关节轨迹（b/s/e/w/h 度）+ 元数据
+- `image/0_input ~ 6_occupancy.png` —— 各步骤中间图
+- `image/planned.png` —— 规划轨迹投影在矫正(裁剪)后迷宫上的结果图
+
+> 纸面默认放在底座正前方 33cm（`--paper-cx 0.33`），让整张 30×21cm 纸（近端 18cm、远端 48cm）
+> 落在机械臂可达环（内边界约 9.4cm / 外边界约 53.2cm）之内。
+
+**② 执行 `draw_maze_real.py`**：只「读 JSON → 校验各关节是否在限位内 → dry-run / 下发实机」，
+不再做任何规划。默认 dry-run（只读+校验，不碰硬件），`--send` 才真发：
+
+```bash
+python arm_real_client/draw_maze_real.py                       # dry-run：读默认 json + 校验限位
+python arm_real_client/draw_maze_real.py --send --max-points 5 # 首次：只发前 5 点试探
+python arm_real_client/draw_maze_real.py --send                # 确认后发全程
+python arm_real_client/draw_maze_real.py --traj 别的.json --send
+```
+
+参数：`--traj` 轨迹 JSON 路径（默认 `outputs/trajectory/trajectory.json`，即 plan_maze 的产物）、
+`--max-points N` 只发前 N 点、`--send` 真发、`--host`/`--port`/`--dt`/`--spd`/`--acc`（默认均取自
+`robot_config.py`）。⚠️ 真发前确认下位机已按 4.3 启动、纸张就位、笔尖朝下；首次低速、人盯着。
+
+> 笔几何：`arm_sim/arm_kinematics.py` 的笔尖/笔尾(`_NIB`/`_TAIL`)已沿笔轴外伸 2.5cm，使「夹笔机构
+> （末端连杆）离纸面高度」从约 8cm 提到约 10.5cm（笔尖落点精度和竖直度不受影响）。**实机务必把笔
+> 也对应多伸出 2.5cm**，否则末端连杆会比模型预期更贴近/碰到纸面。
 
 ### 4.8 急停（一键脚本 estop.py）
 
@@ -310,3 +345,26 @@ python arm_real_client/estop.py
 ```bash
 alias estop='python /data/maoting/Maze/arm_real_client/estop.py'
 ```
+
+### 4.9 键盘遥操（teleop.py）
+
+不规划、直接用键盘实时控制笔尖在纸面上移动（贴纸面即画线），适合手动定位、画简单图形或验证工作空间。脚本在内存里维护「当前笔尖目标 (x,y,z)」，每按一次键就把目标在水平面挪一个固定步长，对新目标解 IK（保持笔竖直）后通过 `RobotClient.joint` 单点下发（robot_server 的 joint 即时非阻塞，正好适合遥操）；z 固定贴纸面。
+
+**在下位机 Windows 上跑**（与 robot_server 同机、连 localhost）。需先把 `arm_sim/arm_kinematics.py` 拷到 `arm_real_client/`（或 arm_sim/）并 `pip install numpy`，并确保 `robot_server.py` 已在运行：
+
+```bash
+python arm_real_client/teleop.py              # 默认连 127.0.0.1:9001，起点在底座前方 33cm
+python arm_real_client/teleop.py --selftest   # 不连机械臂，先验证 IK/坐标/限位
+```
+
+按键：
+
+```
+↑ 前(x+)  ↓ 后(x-)  ← 左  → 右              正交四向，每次走一步（默认 5mm）
+Q 左前   E 右前   A 左后   D 右后            45° 斜走（对角线位移同样一步）
++ / -  增大/减小步长(1~20mm)    Esc 或 Ctrl-C  退出
+```
+
+坐标：x=底座正前方，y=横向（左=y-、右=y+）。前后靠肩/肘伸缩、左右靠基座旋转；到工作空间边界会提示忽略不发。**若实测左右/前后方向反了**，启动加 `--invert-y` / `--invert-x`。其余参数：`--paper-cx`/`--paper-cy`（起点位置）、`--z`（笔高，默认贴纸 0.003）、`--step`（步长，默认 0.005m）、`--spd`/`--acc`（默认很小，安全）、`--host`/`--port`。
+
+> ⚠️ 起点会落笔：一回车机械臂就移到起点并接触纸面，从当前位置到起点这段会划线。回车确认前把纸放好；不想要这条引线可先手动把笔抬一下再启动。
